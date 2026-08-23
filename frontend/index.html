@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LAN Share</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <!-- Username modal shown once per browser -->
+  <div id="nameModal" class="modal-overlay">
+    <div class="modal">
+      <h2>👋 What should we call you?</h2>
+      <p class="modal-sub">This name is shown to others on this network.</p>
+      <input id="nameInput" type="text" maxlength="40" placeholder="e.g. Priya" autocomplete="off" />
+      <button id="nameSubmit">Join</button>
+    </div>
+  </div>
+
+  <div class="app">
+    <header>
+      <div class="header-top">
+        <h1>📡 LAN Share</h1>
+        <div class="whoami">
+          <span id="onlineDot" class="online-dot"></span>
+          <span id="myName">—</span>
+        </div>
+      </div>
+      <div class="backend-row">
+        <span>Backend:</span>
+        <input id="backendUrl" type="text" spellcheck="false" />
+        <button id="saveBackend">Save</button>
+      </div>
+      <nav class="tabs">
+        <button class="tab active" data-tab="chat">💬 Chat</button>
+        <button class="tab" data-tab="files">📁 Files</button>
+      </nav>
+    </header>
+
+    <!-- ===================== CHAT TAB ===================== -->
+    <section id="chatTab" class="tab-panel">
+      <div class="presence-bar">
+        <span id="presenceList">No one else online</span>
+      </div>
+
+      <div id="messageList" class="message-list"></div>
+      <div id="typingIndicator" class="typing-indicator hidden"></div>
+
+      <div id="chatProgressWrap" class="progress-wrap hidden">
+        <div class="progress-info">
+          <span id="chatProgressName"></span>
+          <span id="chatProgressPct">0%</span>
+        </div>
+        <div class="progress-bar">
+          <div id="chatProgressFill" class="progress-fill"></div>
+        </div>
+      </div>
+
+      <form id="chatForm" class="chat-input-row">
+        <button type="button" id="attachBtn" class="icon-btn" title="Attach a file">📎</button>
+        <input id="chatInput" type="text" placeholder="Type a message" autocomplete="off" />
+        <button type="submit" class="icon-btn send-btn" title="Send">➤</button>
+        <input id="chatFileInput" type="file" hidden />
+      </form>
+    </section>
+
+    <!-- ===================== FILES TAB ===================== -->
+    <section id="filesTab" class="tab-panel hidden">
+      <section id="dropzone" class="dropzone">
+        <p>Drag & drop a file here, or click to choose</p>
+        <input id="fileInput" type="file" hidden />
+      </section>
+
+      <section id="progressWrap" class="progress-wrap hidden">
+        <div class="progress-info">
+          <span id="progressName"></span>
+          <span id="progressPct">0%</span>
+        </div>
+        <div class="progress-bar">
+          <div id="progressFill" class="progress-fill"></div>
+        </div>
+        <div id="progressSpeed" class="progress-speed"></div>
+      </section>
+
+      <section class="files-section">
+        <div class="files-header">
+          <h2>Shared files</h2>
+          <button id="refreshBtn" title="Refresh list">⟳</button>
+        </div>
+        <ul id="fileList" class="file-list"></ul>
+        <p id="emptyState" class="empty-state hidden">No files yet — upload something above.</p>
+      </section>
+    </section>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
