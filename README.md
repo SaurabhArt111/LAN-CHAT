@@ -1,4 +1,4 @@
-# LAN Share
+# LANChat
 
 A WhatsApp-style chat + large file sharing app for devices on the same local network. One
 device runs the backend + frontend, everyone else just opens a browser.

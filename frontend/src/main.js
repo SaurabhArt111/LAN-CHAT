@@ -1,12 +1,34 @@
 import { io } from 'socket.io-client';
 
 // ============================================================
-// Backend URL (persisted, editable) — defaults to same host the page loaded from
+// Toasts
+// ============================================================
+const toastHost = document.getElementById('toastHost');
+function showToast(message, kind = 'info', duration = 3500) {
+  const el = document.createElement('div');
+  el.className = `toast toast-${kind}`;
+  el.textContent = message;
+  toastHost.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  setTimeout(() => {
+    el.classList.remove('show');
+    setTimeout(() => el.remove(), 250);
+  }, duration);
+}
+
+// ============================================================
+// Backend URL (persisted, editable via settings popover)
 // ============================================================
 const backendInput = document.getElementById('backendUrl');
 const defaultBackend = `http://${window.location.hostname}:3001`;
 let backendBase = localStorage.getItem('lan-share-backend') || defaultBackend;
 backendInput.value = backendBase;
+
+const settingsBtn = document.getElementById('settingsBtn');
+const settingsPanel = document.getElementById('settingsPanel');
+settingsBtn.addEventListener('click', () => {
+  settingsPanel.classList.toggle('hidden');
+});
 
 document.getElementById('saveBackend').addEventListener('click', () => {
   const val = backendInput.value.trim().replace(/\/$/, '');
@@ -24,7 +46,6 @@ const myNameEl = document.getElementById('myName');
 let username = localStorage.getItem('lan-share-username') || '';
 
 function showNameModal() {
-  nameModal.classList.remove('hidden-modal');
   nameModal.style.display = 'flex';
   nameInput.focus();
 }
@@ -64,41 +85,69 @@ tabs.forEach((tab) => {
 });
 
 // ============================================================
+// Connection status
+// ============================================================
+const connDot = document.getElementById('connDot');
+const connText = document.getElementById('connText');
+
+function setConnStatus(state) {
+  connDot.className = `conn-dot ${state}`;
+  connText.textContent = { connected: 'Online', connecting: 'Connecting…', disconnected: 'Reconnecting…' }[state];
+}
+
+// ============================================================
 // Socket.IO chat
 // ============================================================
 let socket = null;
 const messageList = document.getElementById('messageList');
+const chatEmptyState = document.getElementById('chatEmptyState');
 const presenceList = document.getElementById('presenceList');
 const typingIndicator = document.getElementById('typingIndicator');
 const chatForm = document.getElementById('chatForm');
 const chatInput = document.getElementById('chatInput');
+const jumpToBottomBtn = document.getElementById('jumpToBottom');
 
 function connectSocket() {
   if (socket) socket.disconnect();
+  setConnStatus('connecting');
   socket = io(backendBase, { transports: ['websocket', 'polling'] });
 
   socket.on('connect', () => {
+    setConnStatus('connected');
     socket.emit('join', username);
+  });
+
+  socket.on('disconnect', () => {
+    setConnStatus('disconnected');
+  });
+
+  socket.on('connect_error', () => {
+    setConnStatus('disconnected');
   });
 
   socket.on('history', (history) => {
     messageList.innerHTML = '';
+    messageList.appendChild(chatEmptyState);
+    lastRenderedFrom = null;
     history.forEach(renderMessage);
-    scrollToBottom();
+    chatEmptyState.classList.toggle('hidden', history.length > 0);
+    scrollToBottom(true);
   });
 
   socket.on('message', (msg) => {
+    const wasNearBottom = isNearBottom();
     renderMessage(msg);
-    scrollToBottom();
+    chatEmptyState.classList.add('hidden');
+    if (wasNearBottom || msg.from === username) {
+      scrollToBottom(true);
+    } else {
+      jumpToBottomBtn.classList.remove('hidden');
+    }
   });
 
   socket.on('presence', (users) => {
     const others = users.filter((u) => u !== username);
-    if (others.length === 0) {
-      presenceList.textContent = 'No one else online';
-    } else {
-      presenceList.textContent = `Online: ${users.join(', ')}`;
-    }
+    presenceList.textContent = others.length === 0 ? 'No one else online' : `Online: ${users.join(', ')}`;
   });
 
   let typingTimeout;
@@ -110,8 +159,37 @@ function connectSocket() {
   });
 }
 
+// ---- Smart auto-scroll ----
+function isNearBottom() {
+  return messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 120;
+}
+function scrollToBottom(instant = false) {
+  messageList.scrollTo({ top: messageList.scrollHeight, behavior: instant ? 'auto' : 'smooth' });
+  jumpToBottomBtn.classList.add('hidden');
+}
+messageList.addEventListener('scroll', () => {
+  if (isNearBottom()) jumpToBottomBtn.classList.add('hidden');
+});
+jumpToBottomBtn.addEventListener('click', () => scrollToBottom());
+
+// ---- Avatar colors (consistent per username) ----
+const AVATAR_COLORS = ['#4f8cff', '#34d399', '#f59e0b', '#f472b6', '#a78bfa', '#22d3ee', '#fb7185', '#84cc16'];
+function colorForName(name) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+function initials(name) {
+  return name.trim().slice(0, 2).toUpperCase();
+}
+
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+
+let lastRenderedFrom = null; // tracks consecutive-sender grouping
+
 function renderMessage(msg) {
   if (msg.type === 'system') {
+    lastRenderedFrom = null;
     const div = document.createElement('div');
     div.className = 'system-msg';
     div.textContent = msg.text;
@@ -120,16 +198,32 @@ function renderMessage(msg) {
   }
 
   const mine = msg.from === username;
+  const grouped = !mine && lastRenderedFrom === msg.from;
+  lastRenderedFrom = msg.from;
+
   const wrap = document.createElement('div');
-  wrap.className = `msg-row ${mine ? 'mine' : 'theirs'}`;
+  wrap.className = `msg-row ${mine ? 'mine' : 'theirs'} ${grouped ? 'grouped' : ''}`;
+
+  if (!mine) {
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar';
+    if (grouped) {
+      avatar.classList.add('avatar-spacer');
+    } else {
+      avatar.textContent = initials(msg.from);
+      avatar.style.background = colorForName(msg.from);
+    }
+    wrap.appendChild(avatar);
+  }
 
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
 
-  if (!mine) {
+  if (!mine && !grouped) {
     const nameTag = document.createElement('div');
     nameTag.className = 'msg-from';
     nameTag.textContent = msg.from;
+    nameTag.style.color = colorForName(msg.from);
     bubble.appendChild(nameTag);
   }
 
@@ -139,15 +233,35 @@ function renderMessage(msg) {
     textEl.textContent = msg.text;
     bubble.appendChild(textEl);
   } else if (msg.type === 'file') {
-    const fileEl = document.createElement('a');
-    fileEl.className = 'msg-file';
-    fileEl.href = `${backendBase}/api/download/${encodeURIComponent(msg.name)}`;
-    fileEl.innerHTML = `<span class="msg-file-icon">📄</span>
-      <span class="msg-file-meta">
-        <span class="msg-file-name">${escapeHtml(msg.name)}</span>
-        <span class="msg-file-size">${formatBytes(msg.size || 0)} · tap to download</span>
-      </span>`;
-    bubble.appendChild(fileEl);
+    const url = `${backendBase}/api/download/${encodeURIComponent(msg.name)}`;
+    if (IMAGE_EXT.test(msg.name)) {
+      const imgLink = document.createElement('a');
+      imgLink.href = url;
+      imgLink.target = '_blank';
+      imgLink.rel = 'noopener';
+      const img = document.createElement('img');
+      img.src = url;
+      img.alt = msg.name;
+      img.className = 'msg-image';
+      img.loading = 'lazy';
+      imgLink.appendChild(img);
+      bubble.appendChild(imgLink);
+
+      const caption = document.createElement('div');
+      caption.className = 'msg-file-size';
+      caption.textContent = formatBytes(msg.size || 0);
+      bubble.appendChild(caption);
+    } else {
+      const fileEl = document.createElement('a');
+      fileEl.className = 'msg-file';
+      fileEl.href = url;
+      fileEl.innerHTML = `<span class="msg-file-icon">${fileIcon(msg.name)}</span>
+        <span class="msg-file-meta">
+          <span class="msg-file-name">${escapeHtml(msg.name)}</span>
+          <span class="msg-file-size">${formatBytes(msg.size || 0)} · tap to download</span>
+        </span>`;
+      bubble.appendChild(fileEl);
+    }
   }
 
   const time = document.createElement('div');
@@ -159,8 +273,16 @@ function renderMessage(msg) {
   messageList.appendChild(wrap);
 }
 
-function scrollToBottom() {
-  messageList.scrollTop = messageList.scrollHeight;
+function fileIcon(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return '🗜️';
+  if (['mp4', 'mov', 'mkv', 'avi', 'webm'].includes(ext)) return '🎬';
+  if (['mp3', 'wav', 'flac', 'm4a', 'ogg'].includes(ext)) return '🎵';
+  if (['pdf'].includes(ext)) return '📕';
+  if (['doc', 'docx'].includes(ext)) return '📘';
+  if (['xls', 'xlsx', 'csv'].includes(ext)) return '📗';
+  if (['ppt', 'pptx'].includes(ext)) return '📙';
+  return '📄';
 }
 
 chatForm.addEventListener('submit', (e) => {
@@ -180,19 +302,40 @@ chatInput.addEventListener('input', () => {
   }
 });
 
-// ---- Attach a file from the chat tab ----
+// ---- Attach a file from the chat tab (button, or drag-and-drop onto the chat panel) ----
 const attachBtn = document.getElementById('attachBtn');
 const chatFileInput = document.getElementById('chatFileInput');
 const chatProgressWrap = document.getElementById('chatProgressWrap');
 const chatProgressName = document.getElementById('chatProgressName');
 const chatProgressPct = document.getElementById('chatProgressPct');
 const chatProgressFill = document.getElementById('chatProgressFill');
+const chatTab = document.getElementById('chatTab');
+const chatDropOverlay = document.getElementById('chatDropOverlay');
 
 attachBtn.addEventListener('click', () => chatFileInput.click());
 chatFileInput.addEventListener('change', (e) => {
   const file = e.target.files[0];
   if (file) uploadForChat(file);
   chatFileInput.value = '';
+});
+
+let dragDepth = 0;
+chatTab.addEventListener('dragenter', (e) => {
+  e.preventDefault();
+  dragDepth++;
+  chatDropOverlay.classList.remove('hidden');
+});
+chatTab.addEventListener('dragover', (e) => e.preventDefault());
+chatTab.addEventListener('dragleave', () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) chatDropOverlay.classList.add('hidden');
+});
+chatTab.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  chatDropOverlay.classList.add('hidden');
+  const file = e.dataTransfer.files[0];
+  if (file) uploadForChat(file);
 });
 
 function uploadForChat(file) {
@@ -217,11 +360,14 @@ function uploadForChat(file) {
     if (xhr.status >= 200 && xhr.status < 300) {
       const res = JSON.parse(xhr.responseText);
       socket.emit('file-message', { name: res.filename, size: res.size });
+    } else {
+      showToast('File upload failed', 'error');
     }
   });
 
   xhr.addEventListener('error', () => {
     chatProgressWrap.classList.add('hidden');
+    showToast('File upload failed — check your connection', 'error');
   });
 
   xhr.open('POST', `${backendBase}/api/upload`);
@@ -294,15 +440,17 @@ function uploadFile(file) {
     progressSpeed.textContent = 'Done ✓';
     setTimeout(() => progressWrap.classList.add('hidden'), 1200);
     loadFiles();
-    // Also announce this in chat so everyone knows a file was shared
     if (xhr.status >= 200 && xhr.status < 300 && socket) {
       const res = JSON.parse(xhr.responseText);
       socket.emit('file-message', { name: res.filename, size: res.size });
+    } else if (xhr.status < 200 || xhr.status >= 300) {
+      showToast('Upload failed', 'error');
     }
   });
 
   xhr.addEventListener('error', () => {
     progressSpeed.textContent = 'Upload failed';
+    showToast('Upload failed — check your connection', 'error');
   });
 
   xhr.open('POST', `${backendBase}/api/upload`);
@@ -334,6 +482,10 @@ function renderFiles(files) {
     const li = document.createElement('li');
     li.className = 'file-item';
 
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'file-icon';
+    iconSpan.textContent = fileIcon(f.name);
+
     const info = document.createElement('div');
     info.className = 'file-info';
     info.innerHTML = `<span class="file-name">${escapeHtml(f.name)}</span>
@@ -357,7 +509,7 @@ function renderFiles(files) {
     });
 
     actions.append(downloadBtn, deleteBtn);
-    li.append(info, actions);
+    li.append(iconSpan, info, actions);
     fileListEl.appendChild(li);
   }
 }

@@ -1,11 +1,14 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>LAN Share</title>
+  <link rel="icon" type="image/png" href="/icon.png" />
+  <title>LAN Chat</title>
   <link rel="stylesheet" href="/src/style.css" />
 </head>
+
 <body>
   <!-- Username modal shown once per browser -->
   <div id="nameModal" class="modal-overlay">
@@ -17,20 +20,35 @@
     </div>
   </div>
 
+  <!-- Toast notifications -->
+  <div id="toastHost" class="toast-host"></div>
+
   <div class="app">
     <header>
       <div class="header-top">
-        <h1>📡 LAN Share</h1>
-        <div class="whoami">
-          <span id="onlineDot" class="online-dot"></span>
-          <span id="myName">—</span>
+        <div class="brand">
+          <h1>📡 LAN Chat</h1>
+          <div class="conn-status">
+            <span id="connDot" class="conn-dot connecting"></span>
+            <span id="connText">Connecting…</span>
+          </div>
+        </div>
+        <div class="header-actions">
+          <span id="myName" class="my-name"></span>
+          <button id="settingsBtn" class="icon-btn ghost" title="Settings">⚙️</button>
         </div>
       </div>
-      <div class="backend-row">
-        <span>Backend:</span>
-        <input id="backendUrl" type="text" spellcheck="false" />
-        <button id="saveBackend">Save</button>
+
+      <!-- Settings popover: backend URL config, tucked away -->
+      <div id="settingsPanel" class="settings-panel hidden">
+        <label class="settings-label">Backend address</label>
+        <div class="backend-row">
+          <input id="backendUrl" type="text" spellcheck="false" />
+          <button id="saveBackend">Save</button>
+        </div>
+        <p class="settings-hint">Only change this if the backend runs on a different device or port.</p>
       </div>
+
       <nav class="tabs">
         <button class="tab active" data-tab="chat">💬 Chat</button>
         <button class="tab" data-tab="files">📁 Files</button>
@@ -43,7 +61,18 @@
         <span id="presenceList">No one else online</span>
       </div>
 
-      <div id="messageList" class="message-list"></div>
+      <div id="chatDropOverlay" class="chat-drop-overlay hidden">
+        <div>📎 Drop to share in chat</div>
+      </div>
+
+      <div id="messageList" class="message-list">
+        <div id="chatEmptyState" class="chat-empty-state hidden">
+          <div class="chat-empty-icon">💬</div>
+          <p>No messages yet. Say hi!</p>
+        </div>
+      </div>
+
+      <button id="jumpToBottom" class="jump-to-bottom hidden">↓ New messages</button>
       <div id="typingIndicator" class="typing-indicator hidden"></div>
 
       <div id="chatProgressWrap" class="progress-wrap hidden">
@@ -95,4 +124,5 @@
 
   <script type="module" src="/src/main.js"></script>
 </body>
+
 </html>
