@@ -1,20 +1,25 @@
-# LANChat
+# LAN Chat
 
 A WhatsApp-style chat + large file sharing app for devices on the same local network. One
 device runs the backend + frontend, everyone else just opens a browser.
 
 - **Chat tab** — real-time group chat (Socket.IO), online presence, "is typing…" indicator,
   and message history that's saved to disk so late joiners see everything that happened
-  before they connected.
+  before they connected. Quick reconnects (page refresh, phone lock/wake) stay quiet — you
+  only see a "joined"/"left" message when someone's actually gone for more than a few seconds.
 - **Attach files right in chat** — tap 📎, pick a file, it uploads and shows up as a
-  downloadable bubble for everyone, just like WhatsApp.
+  downloadable bubble for everyone, just like WhatsApp. Shared images render as inline
+  thumbnails.
 - **Files tab** — a plain file-manager view of everything ever shared, for browsing/downloading
-  outside the chat feed.
+  outside the chat feed. Delete something here and any chat message pointing to it updates
+  live for everyone, instead of turning into a dead "Not found" link.
+- **Fast large-file transfer** — files are split into 8MB chunks and uploaded several at once
+  in parallel, which both speeds up transfer over LAN and makes multi-gigabyte files (tested
+  well past 2-3GB) more resilient to a single flaky chunk.
 
-How it works: the backend streams uploads straight to disk (never buffers the whole file in
-memory) and streams downloads back out with HTTP range support, so it comfortably handles
-multi-gigabyte files (tested with 300MB+, works fine well past 1-2GB). Chat runs over the same
-backend using Socket.IO.
+How it works: the backend writes each chunk straight to disk at its correct byte offset (never
+buffers the whole file in memory) and streams downloads back out with HTTP range support. Chat
+and live updates (typing, presence, file-deleted) run over the same backend using Socket.IO.
 
 ## 1. Start the backend (on your "host" device)
 
@@ -70,8 +75,12 @@ it's there for anyone who joins later or reloads the page.
   Firewall → allow Node.js on private networks. On Linux: `sudo ufw allow 3001` and
   `sudo ufw allow 5173`.
 - **Files** are stored in `backend/uploads/` on the host device.
-- **Large files**: uploads/downloads stream directly to/from disk and support HTTP range
-  requests, so multi-GB files and paused/resumed downloads work correctly.
+- **Large files**: uploads are split into 8MB chunks sent 4-at-a-time in parallel (each chunk
+  retries up to 3 times on failure), then reassembled on the host. Downloads stream directly
+  from disk with HTTP range support, so pausing/resuming a download also works. This has been
+  tested well past 2-3GB.
+- **Deleting a file**: removing it from the Files tab immediately marks any chat message that
+  shared it as "File removed" for everyone currently connected — no more dead links.
 - **No auth**: anyone who can reach the backend's IP:port can join the chat and see/download
   shared files — fine for a trusted home/office LAN, not meant for an open or public network.
 - **Production-style run**: for everyday use you can instead build the frontend

@@ -12,7 +12,7 @@
   --mine: #2a5fd6;
 }
 
-* { box-sizing: border-box; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent;}
 
 html, body { height: 100%; }
 
@@ -391,6 +391,16 @@ header h1 { font-size: 20px; margin: 0; }
 }
 
 .msg-file-icon { font-size: 22px; }
+
+.msg-file-removed {
+  opacity: 0.55;
+  cursor: default;
+  pointer-events: none;
+}
+
+.msg-file-removed .msg-file-name {
+  text-decoration: line-through;
+}
 
 .msg-file-meta {
   display: flex;

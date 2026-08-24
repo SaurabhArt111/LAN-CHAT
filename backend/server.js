@@ -1,7 +1,7 @@
 import express from 'express';
-import multer from 'multer';
 import cors from 'cors';
 import fs from 'fs';
+import fsp from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer } from 'http';
@@ -16,11 +16,20 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const MESSAGES_FILE = path.join(__dirname, 'messages.json');
 const MAX_HISTORY = 500;
+const PRESENCE_GRACE_MS = 5000; // don't announce "left" until this long after last connection drops
+const STALE_UPLOAD_MS = 30 * 60 * 1000; // abandoned in-progress uploads get swept after this long
 
 const PORT = process.env.PORT || 3001;
 
 const app = express();
 app.use(cors());
+
+// ================= Startup cleanup: remove any leftover partial uploads =================
+for (const name of fs.readdirSync(UPLOAD_DIR)) {
+  if (name.startsWith('.tmp-')) {
+    try { fs.unlinkSync(path.join(UPLOAD_DIR, name)); } catch {}
+  }
+}
 
 // ================= Chat message persistence =================
 let messages = [];
@@ -43,41 +52,43 @@ function pushMessage(msg) {
   return msg;
 }
 
-// ================= File upload/download (used for both the Files tab and chat attachments) =================
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-  filename: (req, file, cb) => {
-    const original = Buffer.from(file.originalname, 'latin1').toString('utf8');
-    const ext = path.extname(original);
-    const base = path.basename(original, ext);
-
-    let name = original;
-    let target = path.join(UPLOAD_DIR, name);
-    let counter = 1;
-    while (fs.existsSync(target)) {
-      name = `${base} (${counter})${ext}`;
-      target = path.join(UPLOAD_DIR, name);
-      counter++;
+// Mark every chat message that references this filename as deleted (keeps history in sync
+// with the Files tab, so people can't click a download link for something that's gone).
+function markFileDeletedInMessages(name) {
+  let changed = false;
+  for (const msg of messages) {
+    if (msg.type === 'file' && msg.name === name && !msg.deleted) {
+      msg.deleted = true;
+      changed = true;
     }
-    cb(null, name);
-  },
-});
+  }
+  if (changed) saveMessages();
+  return changed;
+}
 
-const upload = multer({
-  storage,
-  limits: { fileSize: 50 * 1024 * 1024 * 1024 }, // 50GB safety cap, not a real limit
-});
-
-app.post('/api/upload', upload.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file received' });
-  res.json({ ok: true, filename: req.file.filename, size: req.file.size });
-});
+// ================= Helpers shared by upload + files listing =================
+function dedupedName(original) {
+  const ext = path.extname(original);
+  const base = path.basename(original, ext);
+  let name = original;
+  let target = path.join(UPLOAD_DIR, name);
+  let counter = 1;
+  while (fs.existsSync(target)) {
+    name = `${base} (${counter})${ext}`;
+    target = path.join(UPLOAD_DIR, name);
+    counter++;
+  }
+  return name;
+}
 
 app.get('/api/files', (req, res) => {
-  const files = fs.readdirSync(UPLOAD_DIR).map((name) => {
-    const stat = fs.statSync(path.join(UPLOAD_DIR, name));
-    return { name, size: stat.size, mtime: stat.mtimeMs };
-  }).sort((a, b) => b.mtime - a.mtime);
+  const files = fs.readdirSync(UPLOAD_DIR)
+    .filter((name) => !name.startsWith('.tmp-'))
+    .map((name) => {
+      const stat = fs.statSync(path.join(UPLOAD_DIR, name));
+      return { name, size: stat.size, mtime: stat.mtimeMs };
+    })
+    .sort((a, b) => b.mtime - a.mtime);
   res.json(files);
 });
 
@@ -117,37 +128,133 @@ app.delete('/api/files/:name', (req, res) => {
   const name = decodeURIComponent(req.params.name);
   const filePath = path.join(UPLOAD_DIR, name);
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  const changed = markFileDeletedInMessages(name);
+  if (changed) io.emit('file-deleted', { name });
   res.json({ ok: true });
 });
+
+// ================= Chunked upload (parallel chunks for faster large-file transfer) =================
+// uploadId -> { fileHandle, tmpPath, finalName, fileSize, chunkSize, totalChunks, received: Set<number>, lastActivity }
+const uploadSessions = new Map();
+
+app.post('/api/upload/init', express.json(), async (req, res) => {
+  const { filename, fileSize, chunkSize, totalChunks } = req.body || {};
+  if (!filename || !fileSize || !chunkSize || !totalChunks) {
+    return res.status(400).json({ error: 'filename, fileSize, chunkSize, totalChunks are required' });
+  }
+
+  const uploadId = randomUUID();
+  const finalName = dedupedName(Buffer.from(filename, 'utf-8').toString('utf-8'));
+  const tmpPath = path.join(UPLOAD_DIR, `.tmp-${uploadId}`);
+
+  try {
+    const fileHandle = await fsp.open(tmpPath, 'w');
+    uploadSessions.set(uploadId, {
+      fileHandle,
+      tmpPath,
+      finalName,
+      fileSize,
+      chunkSize,
+      totalChunks,
+      received: new Set(),
+      lastActivity: Date.now(),
+    });
+    res.json({ uploadId, filename: finalName });
+  } catch (err) {
+    res.status(500).json({ error: 'Could not start upload' });
+  }
+});
+
+app.post('/api/upload/chunk', express.raw({ type: '*/*', limit: '32mb' }), async (req, res) => {
+  const uploadId = req.query.uploadId;
+  const index = parseInt(req.query.index, 10);
+  const session = uploadSessions.get(uploadId);
+
+  if (!session) return res.status(404).json({ error: 'Unknown or expired upload session' });
+  if (Number.isNaN(index) || index < 0 || index >= session.totalChunks) {
+    return res.status(400).json({ error: 'Bad chunk index' });
+  }
+
+  const buffer = req.body;
+  const position = index * session.chunkSize;
+
+  try {
+    await session.fileHandle.write(buffer, 0, buffer.length, position);
+    session.received.add(index);
+    session.lastActivity = Date.now();
+
+    if (session.received.size === session.totalChunks) {
+      await session.fileHandle.close();
+      const finalPath = path.join(UPLOAD_DIR, session.finalName);
+      await fsp.rename(session.tmpPath, finalPath);
+      uploadSessions.delete(uploadId);
+      return res.json({ done: true, filename: session.finalName, size: session.fileSize });
+    }
+
+    res.json({ done: false, received: session.received.size, totalChunks: session.totalChunks });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to write chunk' });
+  }
+});
+
+// Sweep abandoned upload sessions (browser closed mid-upload, etc.) so we don't leak file handles.
+setInterval(async () => {
+  const now = Date.now();
+  for (const [uploadId, session] of uploadSessions.entries()) {
+    if (now - session.lastActivity > STALE_UPLOAD_MS) {
+      try {
+        await session.fileHandle.close();
+      } catch {}
+      try {
+        await fsp.unlink(session.tmpPath);
+      } catch {}
+      uploadSessions.delete(uploadId);
+    }
+  }
+}, 5 * 60 * 1000);
 
 // ================= HTTP + Socket.IO =================
 const httpServer = createServer(app);
 const io = new Server(httpServer, { cors: { origin: '*' } });
 
-// socket.id -> username
-const onlineUsers = new Map();
+// username -> { sockets: Set<socketId>, leaveTimer: Timeout|null }
+const userSessions = new Map();
 
 function broadcastPresence() {
-  io.emit('presence', Array.from(new Set(onlineUsers.values())));
+  io.emit('presence', Array.from(userSessions.keys()));
 }
 
 io.on('connection', (socket) => {
   socket.on('join', (rawName) => {
     const username = (rawName || 'Anonymous').toString().slice(0, 40).trim() || 'Anonymous';
-    onlineUsers.set(socket.id, username);
     socket.data.username = username;
 
-    // Send chat history only to the joining client
+    let entry = userSessions.get(username);
+    const isFreshJoin = !entry || (entry.sockets.size === 0 && !entry.leaveTimer);
+
+    if (!entry) {
+      entry = { sockets: new Set(), leaveTimer: null };
+      userSessions.set(username, entry);
+    }
+    if (entry.leaveTimer) {
+      clearTimeout(entry.leaveTimer);
+      entry.leaveTimer = null;
+    }
+    entry.sockets.add(socket.id);
+
     socket.emit('history', messages);
     broadcastPresence();
 
-    const sysMsg = pushMessage({
-      id: randomUUID(),
-      type: 'system',
-      text: `${username} joined`,
-      ts: Date.now(),
-    });
-    socket.broadcast.emit('message', sysMsg);
+    // Only announce a join if this is genuinely a new person (not a quick reconnect/extra tab)
+    if (isFreshJoin) {
+      const sysMsg = pushMessage({
+        id: randomUUID(),
+        type: 'system',
+        text: `${username} joined`,
+        ts: Date.now(),
+      });
+      socket.broadcast.emit('message', sysMsg);
+    }
   });
 
   socket.on('chat-message', (text) => {
@@ -183,10 +290,18 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    const username = onlineUsers.get(socket.id);
-    onlineUsers.delete(socket.id);
-    broadcastPresence();
-    if (username) {
+    const username = socket.data.username;
+    if (!username) return;
+    const entry = userSessions.get(username);
+    if (!entry) return;
+
+    entry.sockets.delete(socket.id);
+    if (entry.sockets.size > 0) return; // still connected elsewhere (another tab/device)
+
+    // Grace period: only announce "left" if they don't reconnect quickly
+    entry.leaveTimer = setTimeout(() => {
+      userSessions.delete(username);
+      broadcastPresence();
       const sysMsg = pushMessage({
         id: randomUUID(),
         type: 'system',
@@ -194,7 +309,7 @@ io.on('connection', (socket) => {
         ts: Date.now(),
       });
       io.emit('message', sysMsg);
-    }
+    }, PRESENCE_GRACE_MS);
   });
 });
 

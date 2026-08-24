@@ -107,6 +107,9 @@ const chatForm = document.getElementById('chatForm');
 const chatInput = document.getElementById('chatInput');
 const jumpToBottomBtn = document.getElementById('jumpToBottom');
 
+// Local copy of chat history so we can patch it (e.g. mark a file deleted) and re-render.
+let messagesCache = [];
+
 function connectSocket() {
   if (socket) socket.disconnect();
   setConnStatus('connecting');
@@ -117,24 +120,17 @@ function connectSocket() {
     socket.emit('join', username);
   });
 
-  socket.on('disconnect', () => {
-    setConnStatus('disconnected');
-  });
-
-  socket.on('connect_error', () => {
-    setConnStatus('disconnected');
-  });
+  socket.on('disconnect', () => setConnStatus('disconnected'));
+  socket.on('connect_error', () => setConnStatus('disconnected'));
 
   socket.on('history', (history) => {
-    messageList.innerHTML = '';
-    messageList.appendChild(chatEmptyState);
-    lastRenderedFrom = null;
-    history.forEach(renderMessage);
-    chatEmptyState.classList.toggle('hidden', history.length > 0);
+    messagesCache = history;
+    renderAll();
     scrollToBottom(true);
   });
 
   socket.on('message', (msg) => {
+    messagesCache.push(msg);
     const wasNearBottom = isNearBottom();
     renderMessage(msg);
     chatEmptyState.classList.add('hidden');
@@ -143,6 +139,19 @@ function connectSocket() {
     } else {
       jumpToBottomBtn.classList.remove('hidden');
     }
+  });
+
+  // A file was removed via the Files tab (or by anyone) — patch any matching chat
+  // bubbles so they stop looking like a live download link.
+  socket.on('file-deleted', ({ name }) => {
+    let changed = false;
+    for (const msg of messagesCache) {
+      if (msg.type === 'file' && msg.name === name && !msg.deleted) {
+        msg.deleted = true;
+        changed = true;
+      }
+    }
+    if (changed) renderAll();
   });
 
   socket.on('presence', (users) => {
@@ -185,6 +194,14 @@ function initials(name) {
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
 
+function renderAll() {
+  messageList.innerHTML = '';
+  messageList.appendChild(chatEmptyState);
+  lastRenderedFrom = null;
+  messagesCache.forEach(renderMessage);
+  chatEmptyState.classList.toggle('hidden', messagesCache.length > 0);
+}
+
 let lastRenderedFrom = null; // tracks consecutive-sender grouping
 
 function renderMessage(msg) {
@@ -203,6 +220,7 @@ function renderMessage(msg) {
 
   const wrap = document.createElement('div');
   wrap.className = `msg-row ${mine ? 'mine' : 'theirs'} ${grouped ? 'grouped' : ''}`;
+  if (msg.type === 'file') wrap.dataset.fileName = msg.name;
 
   if (!mine) {
     const avatar = document.createElement('div');
@@ -233,34 +251,45 @@ function renderMessage(msg) {
     textEl.textContent = msg.text;
     bubble.appendChild(textEl);
   } else if (msg.type === 'file') {
-    const url = `${backendBase}/api/download/${encodeURIComponent(msg.name)}`;
-    if (IMAGE_EXT.test(msg.name)) {
-      const imgLink = document.createElement('a');
-      imgLink.href = url;
-      imgLink.target = '_blank';
-      imgLink.rel = 'noopener';
-      const img = document.createElement('img');
-      img.src = url;
-      img.alt = msg.name;
-      img.className = 'msg-image';
-      img.loading = 'lazy';
-      imgLink.appendChild(img);
-      bubble.appendChild(imgLink);
-
-      const caption = document.createElement('div');
-      caption.className = 'msg-file-size';
-      caption.textContent = formatBytes(msg.size || 0);
-      bubble.appendChild(caption);
-    } else {
-      const fileEl = document.createElement('a');
-      fileEl.className = 'msg-file';
-      fileEl.href = url;
-      fileEl.innerHTML = `<span class="msg-file-icon">${fileIcon(msg.name)}</span>
+    if (msg.deleted) {
+      const removedEl = document.createElement('div');
+      removedEl.className = 'msg-file msg-file-removed';
+      removedEl.innerHTML = `<span class="msg-file-icon">🗑️</span>
         <span class="msg-file-meta">
           <span class="msg-file-name">${escapeHtml(msg.name)}</span>
-          <span class="msg-file-size">${formatBytes(msg.size || 0)} · tap to download</span>
+          <span class="msg-file-size">File removed</span>
         </span>`;
-      bubble.appendChild(fileEl);
+      bubble.appendChild(removedEl);
+    } else {
+      const url = `${backendBase}/api/download/${encodeURIComponent(msg.name)}`;
+      if (IMAGE_EXT.test(msg.name)) {
+        const imgLink = document.createElement('a');
+        imgLink.href = url;
+        imgLink.target = '_blank';
+        imgLink.rel = 'noopener';
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = msg.name;
+        img.className = 'msg-image';
+        img.loading = 'lazy';
+        imgLink.appendChild(img);
+        bubble.appendChild(imgLink);
+
+        const caption = document.createElement('div');
+        caption.className = 'msg-file-size';
+        caption.textContent = formatBytes(msg.size || 0);
+        bubble.appendChild(caption);
+      } else {
+        const fileEl = document.createElement('a');
+        fileEl.className = 'msg-file';
+        fileEl.href = url;
+        fileEl.innerHTML = `<span class="msg-file-icon">${fileIcon(msg.name)}</span>
+          <span class="msg-file-meta">
+            <span class="msg-file-name">${escapeHtml(msg.name)}</span>
+            <span class="msg-file-size">${formatBytes(msg.size || 0)} · tap to download</span>
+          </span>`;
+        bubble.appendChild(fileEl);
+      }
     }
   }
 
@@ -302,6 +331,99 @@ chatInput.addEventListener('input', () => {
   }
 });
 
+// ============================================================
+// Chunked parallel upload — splits large files into pieces and sends several
+// at once, which is both faster over LAN and lets big (multi-GB) transfers
+// recover from a single flaky chunk instead of failing the whole upload.
+// ============================================================
+const CHUNK_SIZE = 8 * 1024 * 1024; // 8MB
+const CHUNK_CONCURRENCY = 4;
+const CHUNK_MAX_RETRIES = 3;
+
+async function uploadFileChunked(file, { onProgress, onComplete, onError }) {
+  const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+
+  try {
+    const initRes = await fetch(`${backendBase}/api/upload/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: file.name,
+        fileSize: file.size,
+        chunkSize: CHUNK_SIZE,
+        totalChunks,
+      }),
+    });
+    if (!initRes.ok) throw new Error('Could not start upload');
+    const { uploadId } = await initRes.json();
+
+    const progressPerChunk = new Array(totalChunks).fill(0);
+    function reportProgress() {
+      const uploaded = progressPerChunk.reduce((a, b) => a + b, 0);
+      onProgress(Math.min(100, Math.round((uploaded / file.size) * 100)));
+    }
+
+    let finalResult = null;
+
+    function uploadChunkOnce(index, start, end) {
+      return new Promise((resolve, reject) => {
+        const blob = file.slice(start, end);
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${backendBase}/api/upload/chunk?uploadId=${uploadId}&index=${index}`);
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable) {
+            progressPerChunk[index] = e.loaded;
+            reportProgress();
+          }
+        });
+        xhr.addEventListener('load', () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            progressPerChunk[index] = end - start;
+            reportProgress();
+            resolve(JSON.parse(xhr.responseText));
+          } else {
+            reject(new Error('Chunk upload failed: ' + xhr.status));
+          }
+        });
+        xhr.addEventListener('error', () => reject(new Error('Network error during chunk upload')));
+        xhr.send(blob);
+      });
+    }
+
+    async function uploadChunk(index) {
+      const start = index * CHUNK_SIZE;
+      const end = Math.min(file.size, start + CHUNK_SIZE);
+      let lastErr;
+      for (let attempt = 0; attempt < CHUNK_MAX_RETRIES; attempt++) {
+        try {
+          return await uploadChunkOnce(index, start, end);
+        } catch (err) {
+          lastErr = err;
+          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+        }
+      }
+      throw lastErr;
+    }
+
+    const indices = Array.from({ length: totalChunks }, (_, i) => i);
+    async function worker() {
+      while (indices.length) {
+        const index = indices.shift();
+        const result = await uploadChunk(index);
+        if (result.done) finalResult = result;
+      }
+    }
+
+    await Promise.all(Array.from({ length: Math.min(CHUNK_CONCURRENCY, totalChunks) }, worker));
+
+    if (!finalResult) throw new Error('Upload did not complete');
+    onComplete(finalResult);
+  } catch (err) {
+    onError(err);
+  }
+}
+
 // ---- Attach a file from the chat tab (button, or drag-and-drop onto the chat panel) ----
 const attachBtn = document.getElementById('attachBtn');
 const chatFileInput = document.getElementById('chatFileInput');
@@ -339,39 +461,25 @@ chatTab.addEventListener('drop', (e) => {
 });
 
 function uploadForChat(file) {
-  const xhr = new XMLHttpRequest();
-  const formData = new FormData();
-  formData.append('file', file);
-
   chatProgressWrap.classList.remove('hidden');
   chatProgressName.textContent = file.name;
   chatProgressFill.style.width = '0%';
   chatProgressPct.textContent = '0%';
 
-  xhr.upload.addEventListener('progress', (e) => {
-    if (!e.lengthComputable) return;
-    const pct = Math.round((e.loaded / e.total) * 100);
-    chatProgressFill.style.width = pct + '%';
-    chatProgressPct.textContent = pct + '%';
-  });
-
-  xhr.addEventListener('load', () => {
-    chatProgressWrap.classList.add('hidden');
-    if (xhr.status >= 200 && xhr.status < 300) {
-      const res = JSON.parse(xhr.responseText);
+  uploadFileChunked(file, {
+    onProgress: (pct) => {
+      chatProgressFill.style.width = pct + '%';
+      chatProgressPct.textContent = pct + '%';
+    },
+    onComplete: (res) => {
+      chatProgressWrap.classList.add('hidden');
       socket.emit('file-message', { name: res.filename, size: res.size });
-    } else {
-      showToast('File upload failed', 'error');
-    }
+    },
+    onError: (err) => {
+      chatProgressWrap.classList.add('hidden');
+      showToast(`Upload failed: ${err.message}`, 'error');
+    },
   });
-
-  xhr.addEventListener('error', () => {
-    chatProgressWrap.classList.add('hidden');
-    showToast('File upload failed — check your connection', 'error');
-  });
-
-  xhr.open('POST', `${backendBase}/api/upload`);
-  xhr.send(formData);
 }
 
 // ============================================================
@@ -383,7 +491,6 @@ const progressWrap = document.getElementById('progressWrap');
 const progressName = document.getElementById('progressName');
 const progressPct = document.getElementById('progressPct');
 const progressFill = document.getElementById('progressFill');
-const progressSpeed = document.getElementById('progressSpeed');
 
 dropzone.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', (e) => {
@@ -408,53 +515,27 @@ dropzone.addEventListener('drop', (e) => {
 });
 
 function uploadFile(file) {
-  const xhr = new XMLHttpRequest();
-  const formData = new FormData();
-  formData.append('file', file);
-
   progressWrap.classList.remove('hidden');
   progressName.textContent = file.name;
   progressFill.style.width = '0%';
   progressPct.textContent = '0%';
 
-  let lastLoaded = 0;
-  let lastTime = Date.now();
-
-  xhr.upload.addEventListener('progress', (e) => {
-    if (!e.lengthComputable) return;
-    const pct = Math.round((e.loaded / e.total) * 100);
-    progressFill.style.width = pct + '%';
-    progressPct.textContent = pct + '%';
-
-    const now = Date.now();
-    const dt = (now - lastTime) / 1000;
-    if (dt > 0.5) {
-      const bytesPerSec = (e.loaded - lastLoaded) / dt;
-      progressSpeed.textContent = `${formatBytes(bytesPerSec)}/s`;
-      lastLoaded = e.loaded;
-      lastTime = now;
-    }
+  uploadFileChunked(file, {
+    onProgress: (pct) => {
+      progressFill.style.width = pct + '%';
+      progressPct.textContent = pct + '%';
+    },
+    onComplete: (res) => {
+      progressPct.textContent = 'Done ✓';
+      setTimeout(() => progressWrap.classList.add('hidden'), 1200);
+      loadFiles();
+      if (socket) socket.emit('file-message', { name: res.filename, size: res.size });
+    },
+    onError: (err) => {
+      progressWrap.classList.add('hidden');
+      showToast(`Upload failed: ${err.message}`, 'error');
+    },
   });
-
-  xhr.addEventListener('load', () => {
-    progressSpeed.textContent = 'Done ✓';
-    setTimeout(() => progressWrap.classList.add('hidden'), 1200);
-    loadFiles();
-    if (xhr.status >= 200 && xhr.status < 300 && socket) {
-      const res = JSON.parse(xhr.responseText);
-      socket.emit('file-message', { name: res.filename, size: res.size });
-    } else if (xhr.status < 200 || xhr.status >= 300) {
-      showToast('Upload failed', 'error');
-    }
-  });
-
-  xhr.addEventListener('error', () => {
-    progressSpeed.textContent = 'Upload failed';
-    showToast('Upload failed — check your connection', 'error');
-  });
-
-  xhr.open('POST', `${backendBase}/api/upload`);
-  xhr.send(formData);
 }
 
 const fileListEl = document.getElementById('fileList');
