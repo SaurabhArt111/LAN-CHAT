@@ -1,9 +1,5 @@
 @echo off
-echo Starting Share 0n Land services on network...
-echo.
-echo This will open 3 terminal windows:
-echo   1. Backend
-echo   3. Frontend
+echo Starting LAN-CHAT services on network...
 echo.
 timeout /t 2
 
@@ -15,7 +11,7 @@ echo Starting Backend...
 start "Backend" cmd /k "cd backend && npm start"
 timeout /t 2
 
-REM Start Manager Frontend in new window
-echo Starting Manager...
+REM Start Frontend in new window
+echo Starting Frontend...
 start "Frontend" cmd /k "cd frontend && npm run dev"
 timeout /t 2
