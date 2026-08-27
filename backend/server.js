@@ -257,20 +257,22 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('chat-message', (text) => {
+  socket.on('chat-message', (payload) => {
     const username = socket.data.username || 'Anonymous';
+    const text = typeof payload === 'string' ? payload : payload?.text;
     if (typeof text !== 'string' || !text.trim()) return;
     const msg = pushMessage({
       id: randomUUID(),
       type: 'text',
       from: username,
       text: text.slice(0, 4000),
+      replyTo: normalizeReply(payload?.replyTo),
       ts: Date.now(),
     });
     io.emit('message', msg);
   });
 
-  socket.on('file-message', ({ name, size }) => {
+  socket.on('file-message', ({ name, size, caption, replyTo } = {}) => {
     const username = socket.data.username || 'Anonymous';
     if (!name) return;
     const msg = pushMessage({
@@ -279,6 +281,8 @@ io.on('connection', (socket) => {
       from: username,
       name,
       size,
+      caption: typeof caption === 'string' ? caption.slice(0, 4000) : '',
+      replyTo: normalizeReply(replyTo),
       ts: Date.now(),
     });
     io.emit('message', msg);
@@ -312,6 +316,17 @@ io.on('connection', (socket) => {
     }, PRESENCE_GRACE_MS);
   });
 });
+
+function normalizeReply(reply) {
+  if (!reply || typeof reply !== 'object' || !reply.id || !reply.from) return null;
+  return {
+    id: String(reply.id),
+    from: String(reply.from).slice(0, 40),
+    type: reply.type === 'file' ? 'file' : 'text',
+    text: typeof reply.text === 'string' ? reply.text.slice(0, 180) : '',
+    name: typeof reply.name === 'string' ? reply.name.slice(0, 180) : '',
+  };
+}
 
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`\n✅ Backend (chat + files) listening on http://0.0.0.0:${PORT}`);

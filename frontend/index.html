@@ -23,6 +23,41 @@
   <!-- Toast notifications -->
   <div id="toastHost" class="toast-host"></div>
 
+  <div id="attachmentModal" class="modal-overlay hidden">
+    <div class="modal attachment-modal">
+      <div class="attachment-preview-wrap">
+        <img id="attachmentPreview" class="attachment-preview hidden" alt="Attachment preview" />
+        <div id="attachmentFileIcon" class="attachment-file-icon">📄</div>
+      </div>
+      <div class="attachment-file-name" id="attachmentFileName"></div>
+      <div class="attachment-file-size" id="attachmentFileSize"></div>
+      <div id="attachmentReply" class="reply-preview hidden"></div>
+      <textarea id="attachmentCaption" class="attachment-caption" rows="3" maxlength="4000"
+        placeholder="Write a message with this file (optional)"></textarea>
+      <div class="attachment-actions">
+        <button id="attachmentCancel" type="button" class="btn secondary">Cancel</button>
+        <button id="attachmentSend" type="button" class="btn primary">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="mediaModal" class="modal-overlay hidden">
+    <div class="modal media-modal">
+      <div class="media-modal-header">
+        <div>
+          <div id="mediaModalName" class="attachment-file-name"></div>
+          <div id="mediaModalSize" class="attachment-file-size"></div>
+        </div>
+        <button id="mediaModalClose" type="button" class="icon-btn ghost" title="Close preview">×</button>
+      </div>
+      <div id="mediaModalContent" class="media-modal-content"></div>
+      <div id="mediaModalCaption" class="media-modal-caption hidden"></div>
+      <div class="media-modal-actions">
+        <a id="mediaModalDownload" class="btn primary" download>Download</a>
+      </div>
+    </div>
+  </div>
+
   <div class="app">
     <header>
       <div class="header-top">
@@ -72,7 +107,7 @@
         </div>
       </div>
 
-      <button id="jumpToBottom" class="jump-to-bottom hidden">↓ New messages</button>
+      <button id="jumpToBottom" class="jump-to-bottom hidden" title="Scroll to bottom">↓ Scroll to bottom</button>
       <div id="typingIndicator" class="typing-indicator hidden"></div>
 
       <div id="chatProgressWrap" class="progress-wrap hidden">
@@ -83,6 +118,14 @@
         <div class="progress-bar">
           <div id="chatProgressFill" class="progress-fill"></div>
         </div>
+      </div>
+
+      <div id="replyComposer" class="reply-composer hidden">
+        <div>
+          <strong>Replying to <span id="replyComposerName"></span></strong>
+          <div id="replyComposerText"></div>
+        </div>
+        <button id="replyComposerCancel" type="button" class="icon-btn ghost" title="Cancel reply">×</button>
       </div>
 
       <form id="chatForm" class="chat-input-row">

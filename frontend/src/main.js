@@ -106,6 +106,31 @@ const typingIndicator = document.getElementById('typingIndicator');
 const chatForm = document.getElementById('chatForm');
 const chatInput = document.getElementById('chatInput');
 const jumpToBottomBtn = document.getElementById('jumpToBottom');
+const attachmentModal = document.getElementById('attachmentModal');
+const attachmentPreview = document.getElementById('attachmentPreview');
+const attachmentFileIcon = document.getElementById('attachmentFileIcon');
+const attachmentFileName = document.getElementById('attachmentFileName');
+const attachmentFileSize = document.getElementById('attachmentFileSize');
+const attachmentReply = document.getElementById('attachmentReply');
+const attachmentCaption = document.getElementById('attachmentCaption');
+const attachmentSend = document.getElementById('attachmentSend');
+const attachmentCancel = document.getElementById('attachmentCancel');
+const replyComposer = document.getElementById('replyComposer');
+const replyComposerName = document.getElementById('replyComposerName');
+const replyComposerText = document.getElementById('replyComposerText');
+const replyComposerCancel = document.getElementById('replyComposerCancel');
+const mediaModal = document.getElementById('mediaModal');
+const mediaModalName = document.getElementById('mediaModalName');
+const mediaModalSize = document.getElementById('mediaModalSize');
+const mediaModalContent = document.getElementById('mediaModalContent');
+const mediaModalCaption = document.getElementById('mediaModalCaption');
+const mediaModalDownload = document.getElementById('mediaModalDownload');
+const mediaModalClose = document.getElementById('mediaModalClose');
+
+let replyTarget = null;
+let attachmentQueue = [];
+let activeAttachment = null;
+let attachmentPreviewUrl = null;
 
 // Local copy of chat history so we can patch it (e.g. mark a file deleted) and re-render.
 let messagesCache = [];
@@ -177,7 +202,7 @@ function scrollToBottom(instant = false) {
   jumpToBottomBtn.classList.add('hidden');
 }
 messageList.addEventListener('scroll', () => {
-  if (isNearBottom()) jumpToBottomBtn.classList.add('hidden');
+  jumpToBottomBtn.classList.toggle('hidden', isNearBottom());
 });
 jumpToBottomBtn.addEventListener('click', () => scrollToBottom());
 
@@ -220,6 +245,7 @@ function renderMessage(msg) {
 
   const wrap = document.createElement('div');
   wrap.className = `msg-row ${mine ? 'mine' : 'theirs'} ${grouped ? 'grouped' : ''}`;
+  wrap.dataset.messageId = msg.id;
   if (msg.type === 'file') wrap.dataset.fileName = msg.name;
 
   if (!mine) {
@@ -236,6 +262,13 @@ function renderMessage(msg) {
 
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
+
+  if (msg.replyTo) {
+    const quoted = document.createElement('div');
+    quoted.className = 'message-reply-quote';
+    quoted.textContent = `${msg.replyTo.from}: ${msg.replyTo.type === 'file' ? msg.replyTo.name : msg.replyTo.text}`;
+    bubble.appendChild(quoted);
+  }
 
   if (!mine && !grouped) {
     const nameTag = document.createElement('div');
@@ -265,8 +298,10 @@ function renderMessage(msg) {
       if (IMAGE_EXT.test(msg.name)) {
         const imgLink = document.createElement('a');
         imgLink.href = url;
-        imgLink.target = '_blank';
-        imgLink.rel = 'noopener';
+        imgLink.addEventListener('click', (e) => {
+          e.preventDefault();
+          openMediaModal(msg);
+        });
         const img = document.createElement('img');
         img.src = url;
         img.alt = msg.name;
@@ -283,12 +318,22 @@ function renderMessage(msg) {
         const fileEl = document.createElement('a');
         fileEl.className = 'msg-file';
         fileEl.href = url;
+        fileEl.addEventListener('click', (e) => {
+          e.preventDefault();
+          openMediaModal(msg);
+        });
         fileEl.innerHTML = `<span class="msg-file-icon">${fileIcon(msg.name)}</span>
           <span class="msg-file-meta">
             <span class="msg-file-name">${escapeHtml(msg.name)}</span>
             <span class="msg-file-size">${formatBytes(msg.size || 0)} · tap to download</span>
           </span>`;
         bubble.appendChild(fileEl);
+      }
+      if (msg.caption) {
+        const captionText = document.createElement('div');
+        captionText.className = 'msg-text msg-file-caption';
+        captionText.textContent = msg.caption;
+        bubble.appendChild(captionText);
       }
     }
   }
@@ -301,6 +346,50 @@ function renderMessage(msg) {
   wrap.appendChild(bubble);
   messageList.appendChild(wrap);
 }
+
+function openMediaModal(msg) {
+  const url = `${backendBase}/api/download/${encodeURIComponent(msg.name)}`;
+  mediaModalName.textContent = msg.name;
+  mediaModalSize.textContent = formatBytes(msg.size || 0);
+  mediaModalDownload.href = url;
+  mediaModalContent.innerHTML = '';
+
+  if (IMAGE_EXT.test(msg.name)) {
+    const image = document.createElement('img');
+    image.src = url;
+    image.alt = msg.name;
+    image.className = 'media-modal-image';
+    mediaModalContent.appendChild(image);
+  } else if (/\.pdf$/i.test(msg.name)) {
+    const frame = document.createElement('iframe');
+    frame.src = url;
+    frame.title = msg.name;
+    frame.className = 'media-modal-frame';
+    mediaModalContent.appendChild(frame);
+  } else {
+    const icon = document.createElement('div');
+    icon.className = 'media-modal-file-icon';
+    icon.textContent = fileIcon(msg.name);
+    mediaModalContent.appendChild(icon);
+  }
+
+  mediaModalCaption.textContent = msg.caption || '';
+  mediaModalCaption.classList.toggle('hidden', !msg.caption);
+  mediaModal.classList.remove('hidden');
+}
+
+function closeMediaModal() {
+  mediaModal.classList.add('hidden');
+  mediaModalContent.innerHTML = '';
+}
+
+mediaModalClose.addEventListener('click', closeMediaModal);
+mediaModal.addEventListener('click', (e) => {
+  if (e.target === mediaModal) closeMediaModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !mediaModal.classList.contains('hidden')) closeMediaModal();
+});
 
 function fileIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
@@ -318,9 +407,38 @@ chatForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const text = chatInput.value;
   if (!text.trim() || !socket) return;
-  socket.emit('chat-message', text);
+  socket.emit('chat-message', { text, replyTo: replyTarget });
   chatInput.value = '';
+  clearReplyTarget();
 });
+
+messageList.addEventListener('dblclick', (e) => {
+  const row = e.target.closest('.msg-row.mine');
+  if (!row) return;
+  const message = messagesCache.find((msg) => msg.id === row.dataset.messageId);
+  if (message) setReplyTarget(message);
+});
+
+function setReplyTarget(message) {
+  replyTarget = {
+    id: message.id,
+    from: message.from,
+    type: message.type,
+    text: message.text || '',
+    name: message.name || '',
+  };
+  replyComposerName.textContent = message.from;
+  replyComposerText.textContent = message.type === 'file' ? `📎 ${message.name}` : message.text;
+  replyComposer.classList.remove('hidden');
+  chatInput.focus();
+}
+
+function clearReplyTarget() {
+  replyTarget = null;
+  replyComposer.classList.add('hidden');
+}
+
+replyComposerCancel.addEventListener('click', clearReplyTarget);
 
 let lastTypingEmit = 0;
 chatInput.addEventListener('input', () => {
@@ -329,6 +447,30 @@ chatInput.addEventListener('input', () => {
     socket.emit('typing');
     lastTypingEmit = now;
   }
+});
+
+// Browsers expose copied Explorer files and screenshots through clipboardData.files/items.
+chatInput.addEventListener('paste', (e) => {
+  const clipboard = e.clipboardData;
+  if (!clipboard) return;
+
+  const files = Array.from(clipboard.files || []);
+  for (const item of Array.from(clipboard.items || [])) {
+    if (item.kind !== 'file') continue;
+    const file = item.getAsFile();
+    if (file && !files.includes(file)) files.push(file);
+  }
+  if (!files.length) return;
+
+  e.preventDefault();
+  files.forEach((file, index) => {
+    const namedFile = file.name ? file : new File(
+      [file],
+      `pasted-image-${Date.now()}-${index + 1}.png`,
+      { type: file.type || 'image/png', lastModified: Date.now() },
+    );
+    enqueueChatUpload(namedFile);
+  });
 });
 
 // ============================================================
@@ -437,7 +579,7 @@ const chatDropOverlay = document.getElementById('chatDropOverlay');
 attachBtn.addEventListener('click', () => chatFileInput.click());
 chatFileInput.addEventListener('change', (e) => {
   const file = e.target.files[0];
-  if (file) uploadForChat(file);
+  if (file) enqueueChatUpload(file);
   chatFileInput.value = '';
 });
 
@@ -457,29 +599,94 @@ chatTab.addEventListener('drop', (e) => {
   dragDepth = 0;
   chatDropOverlay.classList.add('hidden');
   const file = e.dataTransfer.files[0];
-  if (file) uploadForChat(file);
+  if (file) enqueueChatUpload(file);
 });
 
-function uploadForChat(file) {
+function enqueueChatUpload(file) {
+  attachmentQueue.push(file);
+  if (!activeAttachment) showNextAttachment();
+}
+
+function showNextAttachment() {
+  activeAttachment = attachmentQueue.shift();
+  if (!activeAttachment) return;
+
+  attachmentFileName.textContent = activeAttachment.name;
+  attachmentFileSize.textContent = formatBytes(activeAttachment.size);
+  attachmentFileIcon.textContent = fileIcon(activeAttachment.name);
+  attachmentPreview.classList.add('hidden');
+  attachmentFileIcon.classList.remove('hidden');
+  if (attachmentPreviewUrl) URL.revokeObjectURL(attachmentPreviewUrl);
+  attachmentPreviewUrl = null;
+
+  if (activeAttachment.type.startsWith('image/')) {
+    attachmentPreviewUrl = URL.createObjectURL(activeAttachment);
+    attachmentPreview.src = attachmentPreviewUrl;
+    attachmentPreview.classList.remove('hidden');
+    attachmentFileIcon.classList.add('hidden');
+  }
+  attachmentReply.textContent = replyTarget
+    ? `Replying to ${replyTarget.from}: ${replyTarget.type === 'file' ? replyTarget.name : replyTarget.text}`
+    : '';
+  attachmentReply.classList.toggle('hidden', !replyTarget);
+  attachmentCaption.value = '';
+  attachmentModal.classList.remove('hidden');
+  attachmentCaption.focus();
+}
+
+function finishAttachment() {
+  attachmentModal.classList.add('hidden');
+  if (attachmentPreviewUrl) URL.revokeObjectURL(attachmentPreviewUrl);
+  attachmentPreviewUrl = null;
+  activeAttachment = null;
+  showNextAttachment();
+}
+
+attachmentCancel.addEventListener('click', finishAttachment);
+attachmentSend.addEventListener('click', () => {
+  if (!activeAttachment) return;
+  const file = activeAttachment;
+  const caption = attachmentCaption.value.trim();
+  const reply = replyTarget;
+  attachmentSend.disabled = true;
+  attachmentModal.classList.add('hidden');
+  uploadForChat(file, caption, reply).finally(() => {
+    attachmentSend.disabled = false;
+    clearReplyTarget();
+    if (attachmentPreviewUrl) URL.revokeObjectURL(attachmentPreviewUrl);
+    attachmentPreviewUrl = null;
+    activeAttachment = null;
+    showNextAttachment();
+  });
+});
+
+function uploadForChat(file, caption = '', reply = null) {
   chatProgressWrap.classList.remove('hidden');
   chatProgressName.textContent = file.name;
   chatProgressFill.style.width = '0%';
   chatProgressPct.textContent = '0%';
 
-  uploadFileChunked(file, {
+  return new Promise((resolve) => uploadFileChunked(file, {
     onProgress: (pct) => {
       chatProgressFill.style.width = pct + '%';
       chatProgressPct.textContent = pct + '%';
     },
     onComplete: (res) => {
       chatProgressWrap.classList.add('hidden');
-      socket.emit('file-message', { name: res.filename, size: res.size });
+      if (socket) socket.emit('file-message', {
+        name: res.filename,
+        size: res.size,
+        caption,
+        replyTo: reply,
+      });
+      resolve();
     },
     onError: (err) => {
       chatProgressWrap.classList.add('hidden');
       showToast(`Upload failed: ${err.message}`, 'error');
+      resolve();
     },
-  });
+  }));
 }
 
 // ============================================================
