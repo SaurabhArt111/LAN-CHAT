@@ -15,9 +15,10 @@ const UPLOAD_DIR = path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const MESSAGES_FILE = path.join(__dirname, 'messages.json');
-const MAX_HISTORY = 500;
+const MAX_HISTORY_PER_CONVERSATION = 500;
 const PRESENCE_GRACE_MS = 5000; // don't announce "left" until this long after last connection drops
 const STALE_UPLOAD_MS = 30 * 60 * 1000; // abandoned in-progress uploads get swept after this long
+const GROUP_CONVERSATION_ID = 'group';
 
 const PORT = process.env.PORT || 3001;
 
@@ -32,6 +33,8 @@ for (const name of fs.readdirSync(UPLOAD_DIR)) {
 }
 
 // ================= Chat message persistence =================
+// Every message now carries a conversationId: 'group' for the broadcast chat (unchanged
+// behavior), or a deterministic 'dm:<idA>|<idB>' id for a 1:1 conversation between two devices.
 let messages = [];
 try {
   if (fs.existsSync(MESSAGES_FILE)) {
@@ -42,18 +45,31 @@ try {
 }
 
 function saveMessages() {
-  fs.writeFile(MESSAGES_FILE, JSON.stringify(messages.slice(-MAX_HISTORY)), () => {});
+  fs.writeFile(MESSAGES_FILE, JSON.stringify(messages), () => {});
 }
 
 function pushMessage(msg) {
   messages.push(msg);
-  if (messages.length > MAX_HISTORY) messages = messages.slice(-MAX_HISTORY);
+  // Cap history per-conversation rather than globally, so an active DM can't push group
+  // history out, and vice versa.
+  const counts = new Map();
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const cid = messages[i].conversationId || GROUP_CONVERSATION_ID;
+    counts.set(cid, (counts.get(cid) || 0) + 1);
+    if (counts.get(cid) > MAX_HISTORY_PER_CONVERSATION) messages[i] = null;
+  }
+  messages = messages.filter(Boolean);
   saveMessages();
   return msg;
 }
 
+function dmConversationId(deviceIdA, deviceIdB) {
+  return 'dm:' + [deviceIdA, deviceIdB].sort().join('|');
+}
+
 // Mark every chat message that references this filename as deleted (keeps history in sync
 // with the Files tab, so people can't click a download link for something that's gone).
+// This intentionally covers both group and DM messages.
 function markFileDeletedInMessages(name) {
   let changed = false;
   for (const msg of messages) {
@@ -217,72 +233,116 @@ setInterval(async () => {
 const httpServer = createServer(app);
 const io = new Server(httpServer, { cors: { origin: '*' } });
 
-// username -> { sockets: Set<socketId>, leaveTimer: Timeout|null }
-const userSessions = new Map();
+// deviceId -> { name, sockets: Set<socketId>, leaveTimer: Timeout|null, lastSeen }
+// This is the single source of truth for "who's online" — it replaces the old
+// username-keyed presence map, but keeps the same grace-period behavior.
+const devices = new Map();
 
 function broadcastPresence() {
-  io.emit('presence', Array.from(userSessions.keys()));
+  // Legacy-shaped event (array of display names) — kept so nothing else has to change.
+  io.emit('presence', Array.from(devices.values()).map((d) => d.name));
+}
+
+function broadcastDeviceList() {
+  const list = Array.from(devices.entries()).map(([deviceId, d]) => ({
+    deviceId,
+    name: d.name,
+    online: d.sockets.size > 0,
+    lastSeen: d.lastSeen,
+    publicKey: d.publicKey || null,
+  }));
+  io.emit('devices', list);
+}
+
+function socketsForDevice(deviceId) {
+  const d = devices.get(deviceId);
+  return d ? Array.from(d.sockets) : [];
 }
 
 io.on('connection', (socket) => {
-  socket.on('join', (rawName) => {
-    const username = (rawName || 'Anonymous').toString().slice(0, 40).trim() || 'Anonymous';
-    socket.data.username = username;
+  socket.on('join', (payload) => {
+    // Back-compat: older clients sent just a username string.
+    const isLegacy = typeof payload === 'string';
+    const username = (isLegacy ? payload : payload?.username) || 'Anonymous';
+    const deviceId = (!isLegacy && payload?.deviceId) || `legacy:${socket.id}`;
+    const publicKey = (!isLegacy && payload?.publicKey) || null;
 
-    let entry = userSessions.get(username);
+    const name = username.toString().slice(0, 40).trim() || 'Anonymous';
+    socket.data.username = name;
+    socket.data.deviceId = deviceId;
+
+    let entry = devices.get(deviceId);
     const isFreshJoin = !entry || (entry.sockets.size === 0 && !entry.leaveTimer);
 
     if (!entry) {
-      entry = { sockets: new Set(), leaveTimer: null };
-      userSessions.set(username, entry);
+      entry = { name, sockets: new Set(), leaveTimer: null, lastSeen: Date.now(), publicKey: null };
+      devices.set(deviceId, entry);
     }
+    entry.name = name; // keep display name current in case the user renamed themselves
+    entry.lastSeen = Date.now();
+    // The server only ever stores/relays the PUBLIC key — never a private key, and it never
+    // sees message plaintext for DMs (see dm-message below). This is a public key, safe to
+    // hand to anyone who asks, same as the rest of the "devices" list.
+    if (publicKey) entry.publicKey = publicKey;
     if (entry.leaveTimer) {
       clearTimeout(entry.leaveTimer);
       entry.leaveTimer = null;
     }
     entry.sockets.add(socket.id);
 
-    socket.emit('history', messages);
+    const groupHistory = messages.filter(
+      (m) => !m.conversationId || m.conversationId === GROUP_CONVERSATION_ID
+    );
+    socket.emit('history', groupHistory);
+    socket.emit('devices', Array.from(devices.entries()).map(([id, d]) => ({
+      deviceId: id,
+      name: d.name,
+      online: d.sockets.size > 0,
+      lastSeen: d.lastSeen,
+      publicKey: d.publicKey || null,
+    })));
     broadcastPresence();
+    broadcastDeviceList();
 
-    // Only announce a join if this is genuinely a new person (not a quick reconnect/extra tab)
     if (isFreshJoin) {
       const sysMsg = pushMessage({
         id: randomUUID(),
+        conversationId: GROUP_CONVERSATION_ID,
         type: 'system',
-        text: `${username} joined`,
+        text: `${name} joined`,
         ts: Date.now(),
       });
       socket.broadcast.emit('message', sysMsg);
     }
   });
 
-  socket.on('chat-message', (payload) => {
+  // ---- Group chat (unchanged behavior; intentionally NOT end-to-end encrypted —
+  //      broadcast/group E2EE needs group-key mechanics, a separate problem from the
+  //      pairwise DM encryption below. See PROGRESS.md.) ----
+  socket.on('chat-message', (text) => {
     const username = socket.data.username || 'Anonymous';
-    const text = typeof payload === 'string' ? payload : payload?.text;
     if (typeof text !== 'string' || !text.trim()) return;
     const msg = pushMessage({
       id: randomUUID(),
+      conversationId: GROUP_CONVERSATION_ID,
       type: 'text',
       from: username,
       text: text.slice(0, 4000),
-      replyTo: normalizeReply(payload?.replyTo),
       ts: Date.now(),
     });
     io.emit('message', msg);
   });
 
-  socket.on('file-message', ({ name, size, caption, replyTo } = {}) => {
+  socket.on('file-message', ({ name, size }) => {
     const username = socket.data.username || 'Anonymous';
     if (!name) return;
     const msg = pushMessage({
       id: randomUUID(),
+      conversationId: GROUP_CONVERSATION_ID,
       type: 'file',
       from: username,
       name,
       size,
-      caption: typeof caption === 'string' ? caption.slice(0, 4000) : '',
-      replyTo: normalizeReply(replyTo),
       ts: Date.now(),
     });
     io.emit('message', msg);
@@ -293,40 +353,98 @@ io.on('connection', (socket) => {
     socket.broadcast.emit('typing', username);
   });
 
+  // ---- 1:1 direct messages ----
+  socket.on('get-dm-history', (peerDeviceId) => {
+    const myDeviceId = socket.data.deviceId;
+    if (!myDeviceId || !peerDeviceId) return;
+    const conversationId = dmConversationId(myDeviceId, peerDeviceId);
+    const history = messages.filter((m) => m.conversationId === conversationId);
+    socket.emit('dm-history', { peerDeviceId, messages: history });
+  });
+
+  socket.on('dm-message', ({ toDeviceId, ciphertext, iv }) => {
+    const myDeviceId = socket.data.deviceId;
+    const username = socket.data.username || 'Anonymous';
+    if (!myDeviceId || !toDeviceId || typeof ciphertext !== 'string' || typeof iv !== 'string') return;
+
+    // NOTE: this server never sees plaintext for DMs. `ciphertext`/`iv` arrived already
+    // encrypted client-side (AES-GCM, key derived via ECDH — see frontend/src/crypto.js)
+    // and are relayed/persisted exactly as received.
+    const msg = pushMessage({
+      id: randomUUID(),
+      conversationId: dmConversationId(myDeviceId, toDeviceId),
+      type: 'text-encrypted',
+      from: username,
+      fromDeviceId: myDeviceId,
+      toDeviceId,
+      ciphertext,
+      iv,
+      ts: Date.now(),
+    });
+
+    const recipientSockets = socketsForDevice(toDeviceId);
+    const senderSockets = socketsForDevice(myDeviceId);
+    io.to([...recipientSockets, ...senderSockets]).emit('message', msg);
+  });
+
+  socket.on('dm-file-message', ({ toDeviceId, name, size }) => {
+    const myDeviceId = socket.data.deviceId;
+    const username = socket.data.username || 'Anonymous';
+    if (!myDeviceId || !toDeviceId || !name) return;
+
+    const msg = pushMessage({
+      id: randomUUID(),
+      conversationId: dmConversationId(myDeviceId, toDeviceId),
+      type: 'file',
+      from: username,
+      fromDeviceId: myDeviceId,
+      toDeviceId,
+      name,
+      size,
+      ts: Date.now(),
+    });
+
+    const recipientSockets = socketsForDevice(toDeviceId);
+    const senderSockets = socketsForDevice(myDeviceId);
+    io.to([...recipientSockets, ...senderSockets]).emit('message', msg);
+  });
+
+  socket.on('dm-typing', (toDeviceId) => {
+    const myDeviceId = socket.data.deviceId;
+    const username = socket.data.username || 'Anonymous';
+    if (!myDeviceId || !toDeviceId) return;
+    const recipientSockets = socketsForDevice(toDeviceId);
+    io.to(recipientSockets).emit('dm-typing', { fromDeviceId: myDeviceId, from: username });
+  });
+
   socket.on('disconnect', () => {
-    const username = socket.data.username;
-    if (!username) return;
-    const entry = userSessions.get(username);
+    const deviceId = socket.data.deviceId;
+    if (!deviceId) return;
+    const entry = devices.get(deviceId);
     if (!entry) return;
 
     entry.sockets.delete(socket.id);
-    if (entry.sockets.size > 0) return; // still connected elsewhere (another tab/device)
+    entry.lastSeen = Date.now();
+    if (entry.sockets.size > 0) return; // still connected elsewhere (another tab)
 
-    // Grace period: only announce "left" if they don't reconnect quickly
+    broadcastDeviceList(); // reflect "offline" immediately, even during the leave-message grace period
+
+    // Grace period: only announce "left" in the group chat if they don't reconnect quickly
     entry.leaveTimer = setTimeout(() => {
-      userSessions.delete(username);
+      devices.delete(deviceId);
       broadcastPresence();
+      broadcastDeviceList();
       const sysMsg = pushMessage({
         id: randomUUID(),
+        conversationId: GROUP_CONVERSATION_ID,
         type: 'system',
-        text: `${username} left`,
+        text: `${entry.name} left`,
         ts: Date.now(),
       });
       io.emit('message', sysMsg);
     }, PRESENCE_GRACE_MS);
   });
 });
-
-function normalizeReply(reply) {
-  if (!reply || typeof reply !== 'object' || !reply.id || !reply.from) return null;
-  return {
-    id: String(reply.id),
-    from: String(reply.from).slice(0, 40),
-    type: reply.type === 'file' ? 'file' : 'text',
-    text: typeof reply.text === 'string' ? reply.text.slice(0, 180) : '',
-    name: typeof reply.name === 'string' ? reply.name.slice(0, 180) : '',
-  };
-}
 
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`\n✅ Backend (chat + files) listening on http://0.0.0.0:${PORT}`);
