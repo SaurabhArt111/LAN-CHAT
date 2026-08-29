@@ -25,6 +25,111 @@ function showToast(message, kind = 'info', duration = 3500) {
 }
 
 // ============================================================
+// Theme: Light / Dark / System (default). Applied via a `data-theme` attribute
+// on <html>, which style.css keys off of. "System" tracks the OS preference
+// live (no reload needed if the OS theme flips while the tab is open).
+// ============================================================
+const THEME_KEY = 'lan-share-theme';
+let theme = localStorage.getItem(THEME_KEY) || 'system';
+const systemThemeQuery = window.matchMedia('(prefers-color-scheme: light)');
+
+function applyTheme() {
+  const resolved = theme === 'system' ? (systemThemeQuery.matches ? 'light' : 'dark') : theme;
+  document.documentElement.setAttribute('data-theme', resolved);
+  document.querySelectorAll('.theme-option').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.theme === theme);
+  });
+}
+function setTheme(next) {
+  theme = next;
+  localStorage.setItem(THEME_KEY, theme);
+  applyTheme();
+}
+systemThemeQuery.addEventListener('change', () => {
+  if (theme === 'system') applyTheme();
+});
+applyTheme();
+
+document.getElementById('themeRow').addEventListener('click', (e) => {
+  const btn = e.target.closest('.theme-option');
+  if (btn) setTheme(btn.dataset.theme);
+});
+
+// ============================================================
+// Notifications: Notification API-based (no external push service needed,
+// which matters here since this app is meant to run over plain HTTP on a
+// LAN address rather than a publicly reachable HTTPS host). An explicit
+// enable/disable toggle in Settings drives whether we ever ask, and whether
+// we actually surface anything once permission is granted.
+// ============================================================
+const NOTIF_PREF_KEY = 'lan-share-notifications';
+const notifToggleBtn = document.getElementById('notifToggleBtn');
+const notifStatusText = document.getElementById('notifStatusText');
+const notifHint = document.getElementById('notifHint');
+const notificationsSupported = 'Notification' in window;
+let notificationsEnabled = localStorage.getItem(NOTIF_PREF_KEY) === 'on'
+  && notificationsSupported
+  && Notification.permission === 'granted';
+
+function updateNotifUI() {
+  if (!notificationsSupported) {
+    notifStatusText.textContent = 'Not supported in this browser';
+    notifToggleBtn.classList.add('hidden');
+    notifHint.textContent = 'This browser does not support desktop notifications.';
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    notifStatusText.textContent = 'Blocked in browser settings';
+    notifToggleBtn.classList.add('hidden');
+    notifHint.textContent = 'Notifications were blocked for this site — re-enable them from your browser\'s site settings.';
+    return;
+  }
+  notifToggleBtn.classList.remove('hidden');
+  notifStatusText.textContent = notificationsEnabled ? 'Notifications are on' : 'Notifications are off';
+  notifToggleBtn.textContent = notificationsEnabled ? 'Disable' : 'Enable';
+  notifToggleBtn.classList.toggle('on', notificationsEnabled);
+  notifHint.textContent = "Get notified about new messages when this tab isn't focused.";
+}
+updateNotifUI();
+
+notifToggleBtn.addEventListener('click', async () => {
+  if (!notificationsSupported) return;
+  if (notificationsEnabled) {
+    notificationsEnabled = false;
+    localStorage.setItem(NOTIF_PREF_KEY, 'off');
+    updateNotifUI();
+    return;
+  }
+  const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+  if (permission === 'granted') {
+    notificationsEnabled = true;
+    localStorage.setItem(NOTIF_PREF_KEY, 'on');
+  } else {
+    notificationsEnabled = false;
+    localStorage.setItem(NOTIF_PREF_KEY, 'off');
+    if (permission === 'denied') showToast('Notifications were blocked by the browser.', 'error');
+  }
+  updateNotifUI();
+});
+
+function notifyIncomingMessage(msg, conversationLabel) {
+  if (!notificationsEnabled || !notificationsSupported || Notification.permission !== 'granted') return;
+  if (msg.type === 'system') return;
+  if (!document.hidden && document.hasFocus()) return; // only nudge when they're not already looking at it
+
+  let body;
+  if (msg.type === 'text') body = msg.text;
+  else if (msg.type === 'text-encrypted') body = msg.decryptFailed ? '🔒 Encrypted message' : (msg.decryptedText || '🔒 New message');
+  else if (msg.type === 'file') body = msg.caption ? `📎 ${msg.caption}` : `📎 ${msg.name}`;
+  else return;
+
+  try {
+    const n = new Notification(`${msg.from} — ${conversationLabel}`, { body: body.slice(0, 140) });
+    n.onclick = () => window.focus();
+  } catch {}
+}
+
+// ============================================================
 // Backend URL (persisted, editable via settings popover)
 // ============================================================
 const backendInput = document.getElementById('backendUrl');
@@ -34,14 +139,30 @@ backendInput.value = backendBase;
 
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsPanel = document.getElementById('settingsPanel');
+const nameEditInput = document.getElementById('nameEditInput');
 settingsBtn.addEventListener('click', () => {
+  const opening = settingsPanel.classList.contains('hidden');
   settingsPanel.classList.toggle('hidden');
+  if (opening) nameEditInput.value = username;
 });
 
 document.getElementById('saveBackend').addEventListener('click', () => {
   const val = backendInput.value.trim().replace(/\/$/, '');
   localStorage.setItem('lan-share-backend', val);
   window.location.reload();
+});
+
+document.getElementById('saveName').addEventListener('click', () => {
+  const val = nameEditInput.value.trim().slice(0, 40);
+  if (!val || val === username) return;
+  username = val;
+  localStorage.setItem('lan-share-username', username);
+  myNameEl.textContent = username;
+  if (socket) socket.emit('rename', username);
+  showToast('Display name updated.', 'info');
+});
+nameEditInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('saveName').click();
 });
 
 // ============================================================
@@ -267,23 +388,60 @@ function connectSocket() {
   socket.on('message', async (msg) => {
     await decryptDmMessageInPlace(msg);
     const cid = msg.conversationId || GROUP_ID;
+
+    // Client-side belt-and-suspenders: never render two identical system lines
+    // back-to-back for the same conversation (covers legacy/older servers too).
+    if (msg.type === 'system') {
+      const cache = ensureConversationCache(cid);
+      const prev = cache[cache.length - 1];
+      if (prev && prev.type === 'system' && prev.text === msg.text && msg.ts - prev.ts < 4000) return;
+    }
+
     ensureConversationCache(cid).push(msg);
 
     const isActive =
       (activeConversation?.type === 'group' && cid === GROUP_ID) ||
       (activeConversation?.type === 'dm' && cid === dmConversationId(deviceId, activeConversation.peerDeviceId));
 
+    const mine = msg.from === username && (msg.fromDeviceId ? msg.fromDeviceId === deviceId : true);
+    if (!mine) {
+      const conversationLabel = cid === GROUP_ID ? 'Group' : (msg.from || 'New message');
+      notifyIncomingMessage(msg, conversationLabel);
+    }
+
     if (isActive) {
       const wasNearBottom = isNearBottom();
       renderMessage(msg);
       document.getElementById('chatEmptyState').classList.add('hidden');
-      if (wasNearBottom || msg.from === username) {
+      if (wasNearBottom || mine) {
         scrollToBottom(true);
       } else {
         jumpToBottomBtn.classList.remove('hidden');
       }
     } else if (msg.type !== 'system') {
       unreadConversations.add(cid);
+    }
+    renderChatList();
+  });
+
+  socket.on('message-deleted', ({ conversationId, ids }) => {
+    const cache = messagesByConversation.get(conversationId);
+    if (!cache) return;
+    const idSet = new Set(ids);
+    let changed = false;
+    for (const m of cache) {
+      if (idSet.has(m.id) && !m.deleted) {
+        m.deleted = true;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    exitSelectionMode();
+    if (
+      (activeConversation?.type === 'group' && conversationId === GROUP_ID) ||
+      (activeConversation?.type === 'dm' && conversationId === dmConversationId(deviceId, activeConversation.peerDeviceId))
+    ) {
+      renderActiveConversation();
     }
     renderChatList();
   });
@@ -357,7 +515,7 @@ function lastMessagePreview(cid) {
     if (m.type === 'text-encrypted') {
       return { text: m.decryptFailed ? '🔒 Encrypted message' : (m.decryptedText ?? '🔒 …'), ts: m.ts };
     }
-    if (m.type === 'file') return { text: m.deleted ? 'File removed' : `📎 ${m.name}`, ts: m.ts };
+    if (m.type === 'file') return { text: m.deleted ? 'File removed' : `📎 ${m.caption || m.name}`, ts: m.ts };
   }
   return null;
 }
@@ -492,6 +650,8 @@ function openConversation(conv) {
   activeConversation = conv;
   const cid = conv.type === 'group' ? GROUP_ID : dmConversationId(deviceId, conv.peerDeviceId);
   unreadConversations.delete(cid);
+  if (typeof cancelReply === 'function') cancelReply();
+  if (typeof exitSelectionMode === 'function') exitSelectionMode();
 
   conversationName.textContent = conv.type === 'group' ? 'Group' : conv.peerName;
   updateConversationSubtitle();
@@ -513,6 +673,8 @@ function openConversation(conv) {
 
 document.getElementById('backToListBtn').addEventListener('click', () => {
   activeConversation = null;
+  cancelReply();
+  exitSelectionMode();
   conversationView.classList.add('hidden');
   chatListView.classList.remove('hidden');
   renderChatList();
@@ -551,11 +713,36 @@ function initials(name) {
 }
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+const VIDEO_EXT = /\.(mp4|mov|mkv|avi|webm)$/i;
+const AUDIO_EXT = /\.(mp3|wav|flac|m4a|ogg)$/i;
 let lastRenderedFrom = null;
+
+function currentConversationId() {
+  if (!activeConversation) return null;
+  return activeConversation.type === 'group' ? GROUP_ID : dmConversationId(deviceId, activeConversation.peerDeviceId);
+}
+
+function getMessageById(cid, id) {
+  const arr = messagesByConversation.get(cid) || [];
+  return arr.find((m) => m.id === id);
+}
+
+function isMine(msg) {
+  return msg.from === username && (msg.fromDeviceId ? msg.fromDeviceId === deviceId : true);
+}
+
+function messagePreviewText(m) {
+  if (!m) return 'Original message';
+  if (m.type === 'text') return m.text;
+  if (m.type === 'text-encrypted') return m.decryptFailed ? '🔒 Encrypted message' : (m.decryptedText ?? '🔒 …');
+  if (m.type === 'file') return m.deleted ? 'File removed' : `📎 ${m.caption || m.name}`;
+  return '';
+}
 
 function renderActiveConversation(scrollInstant = false) {
   if (!activeConversation) return;
-  const cid = activeConversation.type === 'group' ? GROUP_ID : dmConversationId(deviceId, activeConversation.peerDeviceId);
+  exitSelectionMode();
+  const cid = currentConversationId();
   const msgs = messagesByConversation.get(cid) || [];
 
   messageList.innerHTML = '';
@@ -576,13 +763,19 @@ function renderMessage(msg) {
     return;
   }
 
-  const mine = msg.from === username && (msg.fromDeviceId ? msg.fromDeviceId === deviceId : true);
+  const mine = isMine(msg);
   const grouped = !mine && lastRenderedFrom === msg.from;
   lastRenderedFrom = msg.from;
 
   const wrap = document.createElement('div');
   wrap.className = `msg-row ${mine ? 'mine' : 'theirs'} ${grouped ? 'grouped' : ''}`;
+  wrap.dataset.id = msg.id;
   if (msg.type === 'file') wrap.dataset.fileName = msg.name;
+
+  const checkbox = document.createElement('div');
+  checkbox.className = 'msg-row-checkbox';
+  checkbox.textContent = '✓';
+  wrap.appendChild(checkbox);
 
   if (!mine) {
     const avatar = document.createElement('div');
@@ -605,6 +798,39 @@ function renderMessage(msg) {
     nameTag.textContent = msg.from;
     nameTag.style.color = colorForName(msg.from);
     bubble.appendChild(nameTag);
+  }
+
+  if (msg.forwarded) {
+    const fwdTag = document.createElement('div');
+    fwdTag.className = 'msg-forwarded-tag';
+    fwdTag.textContent = '↪️ Forwarded';
+    bubble.appendChild(fwdTag);
+  }
+
+  if (msg.replyTo) {
+    const parent = getMessageById(currentConversationId(), msg.replyTo);
+    const quote = document.createElement('div');
+    quote.className = 'msg-reply-quote';
+    const body = document.createElement('div');
+    body.className = 'msg-reply-quote-body';
+    const fromEl = document.createElement('span');
+    fromEl.className = 'msg-reply-quote-from';
+    fromEl.textContent = parent ? (isMine(parent) ? 'You' : parent.from) : 'Original message';
+    const textEl = document.createElement('span');
+    textEl.className = 'msg-reply-quote-text';
+    textEl.textContent = messagePreviewText(parent);
+    body.append(fromEl, textEl);
+    quote.appendChild(body);
+    quote.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const target = messageList.querySelector(`[data-id="${msg.replyTo}"]`);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.add('highlight-flash');
+        setTimeout(() => target.classList.remove('highlight-flash'), 900);
+      }
+    });
+    bubble.appendChild(quote);
   }
 
   if (msg.type === 'text') {
@@ -635,33 +861,43 @@ function renderMessage(msg) {
     } else {
       const url = `${backendBase}/api/download/${encodeURIComponent(msg.name)}`;
       if (IMAGE_EXT.test(msg.name)) {
-        const imgLink = document.createElement('a');
-        imgLink.href = url;
-        imgLink.target = '_blank';
-        imgLink.rel = 'noopener';
         const img = document.createElement('img');
         img.src = url;
         img.alt = msg.name;
         img.className = 'msg-image';
         img.loading = 'lazy';
-        imgLink.appendChild(img);
-        bubble.appendChild(imgLink);
+        img.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (selectionMode) toggleSelect(msg.id);
+          else openViewer(msg);
+        });
+        bubble.appendChild(img);
 
         const caption = document.createElement('div');
         caption.className = 'msg-file-size';
         caption.textContent = formatBytes(msg.size || 0);
         bubble.appendChild(caption);
       } else {
-        const fileEl = document.createElement('a');
+        const fileEl = document.createElement('div');
         fileEl.className = 'msg-file';
-        fileEl.href = url;
         fileEl.innerHTML = `<span class="msg-file-icon">${fileIcon(msg.name)}</span>
           <span class="msg-file-meta">
             <span class="msg-file-name">${escapeHtml(msg.name)}</span>
-            <span class="msg-file-size">${formatBytes(msg.size || 0)} · tap to download</span>
+            <span class="msg-file-size">${formatBytes(msg.size || 0)} · tap to open</span>
           </span>`;
+        fileEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (selectionMode) toggleSelect(msg.id);
+          else openViewer(msg);
+        });
         bubble.appendChild(fileEl);
       }
+    }
+    if (msg.caption) {
+      const captionEl = document.createElement('div');
+      captionEl.className = 'msg-caption';
+      captionEl.textContent = msg.caption;
+      bubble.appendChild(captionEl);
     }
   }
 
@@ -671,6 +907,31 @@ function renderMessage(msg) {
   bubble.appendChild(time);
 
   wrap.appendChild(bubble);
+
+  // ---- Interactions: double-click to reply, right-click / long-press for the
+  // context menu, tap-to-toggle while in multi-select mode ----
+  wrap.addEventListener('dblclick', () => {
+    if (selectionMode) return;
+    startReply(msg);
+  });
+  wrap.addEventListener('click', () => {
+    if (selectionMode) toggleSelect(msg.id);
+  });
+  wrap.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    openContextMenu(e.clientX, e.clientY, msg);
+  });
+  let longPressTimer;
+  wrap.addEventListener('touchstart', (e) => {
+    const touch = e.touches[0];
+    longPressTimer = setTimeout(() => openContextMenu(touch.clientX, touch.clientY, msg), 500);
+  }, { passive: true });
+  wrap.addEventListener('touchend', () => clearTimeout(longPressTimer));
+  wrap.addEventListener('touchmove', () => clearTimeout(longPressTimer));
+
+  if (selectionMode) wrap.classList.add('selecting');
+  if (selectedIds.has(msg.id)) wrap.classList.add('selected');
+
   messageList.appendChild(wrap);
 }
 
@@ -686,14 +947,297 @@ function fileIcon(name) {
   return '📄';
 }
 
+// ============================================================
+// Reply-to-message: double-click a msg-row to start replying (see renderMessage).
+// ============================================================
+const replyBar = document.getElementById('replyBar');
+const replyBarFrom = document.getElementById('replyBarFrom');
+const replyBarText = document.getElementById('replyBarText');
+let replyContext = null; // { id } of the message being replied to
+
+function startReply(msg) {
+  if (msg.type === 'system') return;
+  replyContext = { id: msg.id };
+  replyBarFrom.textContent = isMine(msg) ? 'You' : msg.from;
+  replyBarText.textContent = messagePreviewText(msg);
+  replyBar.classList.remove('hidden');
+  chatInput.focus();
+}
+function cancelReply() {
+  replyContext = null;
+  replyBar.classList.add('hidden');
+}
+document.getElementById('replyBarCancel').addEventListener('click', cancelReply);
+
+// ============================================================
+// Multi-select mode: shared across text messages and file/media attachments.
+// ============================================================
+let selectionMode = false;
+const selectedIds = new Set();
+const selectionBar = document.getElementById('selectionBar');
+const selectionCount = document.getElementById('selectionCount');
+
+function enterSelectionMode(initialId) {
+  selectionMode = true;
+  selectedIds.clear();
+  if (initialId) selectedIds.add(initialId);
+  renderActiveConversationKeepingSelection();
+}
+function exitSelectionMode() {
+  if (!selectionMode) return;
+  selectionMode = false;
+  selectedIds.clear();
+  selectionBar.classList.add('hidden');
+  messageList.querySelectorAll('.msg-row.selecting').forEach((el) => {
+    el.classList.remove('selecting', 'selected');
+  });
+}
+function renderActiveConversationKeepingSelection() {
+  const cid = currentConversationId();
+  const msgs = messagesByConversation.get(cid) || [];
+  messageList.innerHTML = '';
+  messageList.appendChild(chatEmptyState);
+  lastRenderedFrom = null;
+  msgs.forEach(renderMessage);
+  chatEmptyState.classList.add('hidden');
+  updateSelectionBar();
+}
+function toggleSelect(id) {
+  if (selectedIds.has(id)) selectedIds.delete(id);
+  else selectedIds.add(id);
+  if (selectedIds.size === 0) {
+    exitSelectionMode();
+    return;
+  }
+  const row = messageList.querySelector(`[data-id="${id}"]`);
+  if (row) row.classList.toggle('selected', selectedIds.has(id));
+  updateSelectionBar();
+}
+function updateSelectionBar() {
+  if (!selectionMode) return;
+  selectionBar.classList.remove('hidden');
+  selectionCount.textContent = `${selectedIds.size} selected`;
+}
+document.getElementById('selectionCancelBtn').addEventListener('click', exitSelectionMode);
+document.getElementById('selectionCopyBtn').addEventListener('click', () => copyMessages([...selectedIds]));
+document.getElementById('selectionForwardBtn').addEventListener('click', () => openForwardModal([...selectedIds]));
+document.getElementById('selectionDeleteBtn').addEventListener('click', () => deleteMessages([...selectedIds]));
+
+// ============================================================
+// Context menu (right-click / long-press) for a single message or attachment
+// ============================================================
+const contextMenu = document.getElementById('contextMenu');
+let contextMenuMsg = null;
+
+function openContextMenu(x, y, msg) {
+  contextMenuMsg = msg;
+  const mine = isMine(msg);
+  const isDeletedFile = msg.type === 'file' && msg.deleted;
+  contextMenu.querySelector('[data-action="delete"]').classList.toggle('hidden', !mine || isDeletedFile);
+  contextMenu.querySelector('[data-action="copy"]').classList.toggle('hidden', isDeletedFile);
+  contextMenu.querySelector('[data-action="forward"]').classList.toggle('hidden', isDeletedFile);
+  contextMenu.querySelector('[data-action="reply"]').classList.toggle('hidden', isDeletedFile);
+  contextMenu.classList.remove('hidden');
+  const rect = contextMenu.getBoundingClientRect();
+  const left = Math.min(x, window.innerWidth - rect.width - 8);
+  const top = Math.min(y, window.innerHeight - rect.height - 8);
+  contextMenu.style.left = `${Math.max(8, left)}px`;
+  contextMenu.style.top = `${Math.max(8, top)}px`;
+}
+function closeContextMenu() {
+  contextMenu.classList.add('hidden');
+  contextMenuMsg = null;
+}
+document.addEventListener('click', (e) => {
+  if (!contextMenu.classList.contains('hidden') && !contextMenu.contains(e.target)) closeContextMenu();
+});
+contextMenu.addEventListener('click', (e) => {
+  const action = e.target.closest('button')?.dataset.action;
+  if (!action || !contextMenuMsg) return closeContextMenu();
+  const msg = contextMenuMsg;
+  closeContextMenu();
+  if (action === 'reply') startReply(msg);
+  else if (action === 'forward') openForwardModal([msg.id]);
+  else if (action === 'copy') copyMessages([msg.id]);
+  else if (action === 'delete') deleteMessages([msg.id]);
+  else if (action === 'select') enterSelectionMode(msg.id);
+});
+
+// ============================================================
+// Copy / delete / forward — all operate on 1+ message ids from the active conversation
+// ============================================================
+function copyMessages(ids) {
+  const cid = currentConversationId();
+  const texts = ids
+    .map((id) => getMessageById(cid, id))
+    .filter(Boolean)
+    .map(messagePreviewText)
+    .filter(Boolean);
+  if (texts.length === 0) return;
+  navigator.clipboard?.writeText(texts.join('\n')).then(
+    () => showToast('Copied to clipboard.', 'info'),
+    () => showToast('Could not copy to clipboard.', 'error')
+  );
+  exitSelectionMode();
+}
+
+function deleteMessages(ids) {
+  if (!socket || ids.length === 0) return;
+  const cid = currentConversationId();
+  const deletable = ids.filter((id) => {
+    const m = getMessageById(cid, id);
+    return m && isMine(m) && !m.deleted;
+  });
+  if (deletable.length === 0) {
+    showToast('You can only delete your own messages.', 'error');
+    exitSelectionMode();
+    return;
+  }
+  socket.emit('delete-message', { conversationId: cid, ids: deletable });
+  exitSelectionMode();
+}
+
+// ---- Forward picker ----
+const forwardModal = document.getElementById('forwardModal');
+const forwardList = document.getElementById('forwardList');
+const forwardConfirmBtn = document.getElementById('forwardConfirmBtn');
+let forwardMsgIds = [];
+const forwardTargets = new Set(); // 'group' or a peerDeviceId
+
+function openForwardModal(ids) {
+  forwardMsgIds = ids;
+  forwardTargets.clear();
+  forwardConfirmBtn.disabled = true;
+  forwardList.innerHTML = '';
+
+  const rows = [{ kind: 'group', key: 'group', name: 'Group' }, ...deviceList.map((d) => ({ kind: 'dm', key: d.deviceId, name: d.name }))];
+  for (const row of rows) {
+    const li = document.createElement('li');
+    li.className = 'forward-item';
+    const check = document.createElement('span');
+    check.className = 'forward-item-check';
+    check.textContent = '✓';
+    const name = document.createElement('span');
+    name.className = 'forward-item-name';
+    name.textContent = row.name;
+    li.append(check, name);
+    li.addEventListener('click', () => {
+      if (forwardTargets.has(row.key)) forwardTargets.delete(row.key);
+      else forwardTargets.add(row.key);
+      li.classList.toggle('checked', forwardTargets.has(row.key));
+      forwardConfirmBtn.disabled = forwardTargets.size === 0;
+    });
+    forwardList.appendChild(li);
+  }
+  forwardModal.classList.remove('hidden');
+}
+document.getElementById('forwardCancelBtn').addEventListener('click', () => forwardModal.classList.add('hidden'));
+
+forwardConfirmBtn.addEventListener('click', async () => {
+  const cid = currentConversationId();
+  const msgs = forwardMsgIds.map((id) => getMessageById(cid, id)).filter(Boolean);
+  for (const target of forwardTargets) {
+    for (const msg of msgs) {
+      await forwardOneMessage(msg, target);
+    }
+  }
+  forwardModal.classList.add('hidden');
+  exitSelectionMode();
+  showToast('Forwarded.', 'info');
+});
+
+async function forwardOneMessage(msg, target) {
+  if (!socket) return;
+  const text = msg.type === 'text' ? msg.text : msg.type === 'text-encrypted' ? (msg.decryptedText ?? null) : null;
+
+  if (target === 'group') {
+    if (msg.type === 'file') {
+      if (msg.deleted) return;
+      socket.emit('file-message', { name: msg.name, size: msg.size, caption: msg.caption || null, forwarded: true });
+    } else if (text != null) {
+      socket.emit('chat-message', { text, forwarded: true });
+    }
+    return;
+  }
+
+  // Forwarding into a DM: files stay plaintext metadata (consistent with how DM files
+  // already work); text gets freshly encrypted for that specific recipient.
+  if (msg.type === 'file') {
+    if (msg.deleted) return;
+    socket.emit('dm-file-message', { toDeviceId: target, name: msg.name, size: msg.size, caption: msg.caption || null, forwarded: true });
+  } else if (text != null) {
+    const keyInfo = await ensureConversationKey(target);
+    if (!keyInfo) {
+      showToast('Could not forward — recipient has no encryption key yet.', 'error');
+      return;
+    }
+    const { ciphertext, iv } = await encryptText(keyInfo.aesKey, text);
+    socket.emit('dm-message', { toDeviceId: target, ciphertext, iv, forwarded: true });
+  }
+}
+
+// ============================================================
+// Media / file viewer modal
+// ============================================================
+const viewerModal = document.getElementById('viewerModal');
+const viewerName = document.getElementById('viewerName');
+const viewerBody = document.getElementById('viewerBody');
+const viewerMeta = document.getElementById('viewerMeta');
+const viewerDownloadBtn = document.getElementById('viewerDownloadBtn');
+
+function openViewer(msg) {
+  if (msg.deleted) return;
+  const url = `${backendBase}/api/download/${encodeURIComponent(msg.name)}`;
+  viewerName.textContent = msg.name;
+  viewerMeta.textContent = formatBytes(msg.size || 0);
+  viewerDownloadBtn.href = `${url}?download=1`;
+  viewerDownloadBtn.setAttribute('download', msg.name);
+  viewerBody.innerHTML = '';
+
+  if (IMAGE_EXT.test(msg.name)) {
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = msg.name;
+    viewerBody.appendChild(img);
+  } else if (VIDEO_EXT.test(msg.name)) {
+    const video = document.createElement('video');
+    video.src = url;
+    video.controls = true;
+    video.autoplay = true;
+    viewerBody.appendChild(video);
+  } else if (AUDIO_EXT.test(msg.name)) {
+    const audio = document.createElement('audio');
+    audio.src = url;
+    audio.controls = true;
+    audio.autoplay = true;
+    viewerBody.appendChild(audio);
+  } else {
+    const wrap = document.createElement('div');
+    wrap.className = 'viewer-generic';
+    wrap.innerHTML = `<div class="viewer-generic-icon">${fileIcon(msg.name)}</div><div>${escapeHtml(msg.name)}</div><p style="color:var(--muted);font-size:12.5px;">Preview isn't available for this file type — use Download.</p>`;
+    viewerBody.appendChild(wrap);
+  }
+  viewerModal.classList.remove('hidden');
+}
+function closeViewer() {
+  viewerModal.classList.add('hidden');
+  viewerBody.innerHTML = '';
+}
+document.getElementById('viewerCloseBtn').addEventListener('click', closeViewer);
+viewerModal.addEventListener('click', (e) => {
+  if (e.target === viewerModal) closeViewer();
+});
+
 chatForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const text = chatInput.value;
   if (!text.trim() || !socket || !activeConversation) return;
+  const replyTo = replyContext?.id || null;
 
   if (activeConversation.type === 'group') {
-    socket.emit('chat-message', text);
+    socket.emit('chat-message', { text, replyTo });
     chatInput.value = '';
+    cancelReply();
     return;
   }
 
@@ -709,8 +1253,9 @@ chatForm.addEventListener('submit', async (e) => {
     return;
   }
   const { ciphertext, iv } = await encryptText(keyInfo.aesKey, text);
-  socket.emit('dm-message', { toDeviceId: peerId, ciphertext, iv });
+  socket.emit('dm-message', { toDeviceId: peerId, ciphertext, iv, replyTo });
   chatInput.value = '';
+  cancelReply();
 });
 
 let lastTypingEmit = 0;
@@ -815,20 +1360,126 @@ async function uploadFileChunked(file, { onProgress, onComplete, onError }) {
   }
 }
 
-// ---- Attach a file to the active conversation (button, or drag-and-drop) ----
+// ---- Attach files/media to the active conversation (button, drag-and-drop, or
+// paste) — all funnel through a preview-and-send modal so a caption can be added
+// before anything actually uploads. ----
 const attachBtn = document.getElementById('attachBtn');
 const chatFileInput = document.getElementById('chatFileInput');
-const chatProgressWrap = document.getElementById('chatProgressWrap');
-const chatProgressName = document.getElementById('chatProgressName');
-const chatProgressPct = document.getElementById('chatProgressPct');
-const chatProgressFill = document.getElementById('chatProgressFill');
 const chatTab = document.getElementById('chatTab');
 const chatDropOverlay = document.getElementById('chatDropOverlay');
 
+const attachPreviewModal = document.getElementById('attachPreviewModal');
+const attachModalTitle = document.getElementById('attachModalTitle');
+const attachPreviewList = document.getElementById('attachPreviewList');
+const attachCaptionInput = document.getElementById('attachCaptionInput');
+const attachSendBtn = document.getElementById('attachSendBtn');
+const attachSendProgressWrap = document.getElementById('attachSendProgressWrap');
+const attachSendProgressFill = document.getElementById('attachSendProgressFill');
+
+let attachQueue = []; // File[] queued for the preview modal
+
+function queueFilesForChat(files) {
+  if (!activeConversation || !files || files.length === 0) return;
+  attachQueue = Array.from(files);
+  renderAttachPreview();
+  attachCaptionInput.value = '';
+  attachPreviewModal.classList.remove('hidden');
+  attachCaptionInput.focus();
+}
+
+function renderAttachPreview() {
+  attachModalTitle.textContent = attachQueue.length > 1 ? `Send ${attachQueue.length} files` : 'Send file';
+  attachPreviewList.innerHTML = '';
+  attachQueue.forEach((file, index) => {
+    const li = document.createElement('li');
+    li.className = 'attach-preview-item';
+
+    if (file.type.startsWith('image/')) {
+      const img = document.createElement('img');
+      img.className = 'attach-preview-thumb';
+      img.src = URL.createObjectURL(file);
+      li.appendChild(img);
+    } else {
+      const icon = document.createElement('div');
+      icon.className = 'attach-preview-icon';
+      icon.textContent = fileIcon(file.name);
+      li.appendChild(icon);
+    }
+
+    const info = document.createElement('div');
+    info.className = 'attach-preview-info';
+    info.innerHTML = `<span class="attach-preview-name">${escapeHtml(file.name)}</span>
+      <span class="attach-preview-size">${formatBytes(file.size)}</span>`;
+    li.appendChild(info);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'attach-preview-remove';
+    removeBtn.textContent = '✕';
+    removeBtn.addEventListener('click', () => {
+      attachQueue.splice(index, 1);
+      if (attachQueue.length === 0) closeAttachPreview();
+      else renderAttachPreview();
+    });
+    li.appendChild(removeBtn);
+
+    attachPreviewList.appendChild(li);
+  });
+}
+
+function closeAttachPreview() {
+  attachPreviewModal.classList.add('hidden');
+  attachQueue = [];
+  attachSendProgressWrap.classList.add('hidden');
+}
+document.getElementById('attachModalClose').addEventListener('click', closeAttachPreview);
+
+attachCaptionInput.addEventListener('input', () => {
+  if (!socket || !activeConversation) return;
+  if (activeConversation.type === 'group') socket.emit('typing');
+  else socket.emit('dm-typing', activeConversation.peerDeviceId);
+});
+attachCaptionInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') attachSendBtn.click();
+});
+
+attachSendBtn.addEventListener('click', async () => {
+  if (attachQueue.length === 0 || !activeConversation) return;
+  const caption = attachCaptionInput.value.trim() || null;
+  const replyTo = replyContext?.id || null;
+  const files = [...attachQueue];
+  attachSendBtn.disabled = true;
+  attachSendProgressWrap.classList.remove('hidden');
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    await new Promise((resolve) => {
+      uploadFileChunked(file, {
+        onProgress: (pct) => {
+          const overall = Math.round(((i + pct / 100) / files.length) * 100);
+          attachSendProgressFill.style.width = overall + '%';
+        },
+        onComplete: (res) => {
+          const payload = { name: res.filename, size: res.size, caption, replyTo };
+          if (activeConversation.type === 'group') socket.emit('file-message', payload);
+          else socket.emit('dm-file-message', { toDeviceId: activeConversation.peerDeviceId, ...payload });
+          resolve();
+        },
+        onError: (err) => {
+          showToast(`Upload failed: ${err.message}`, 'error');
+          resolve();
+        },
+      });
+    });
+  }
+
+  attachSendBtn.disabled = false;
+  cancelReply();
+  closeAttachPreview();
+});
+
 attachBtn.addEventListener('click', () => chatFileInput.click());
 chatFileInput.addEventListener('change', (e) => {
-  const file = e.target.files[0];
-  if (file) uploadForChat(file);
+  queueFilesForChat(e.target.files);
   chatFileInput.value = '';
 });
 
@@ -849,36 +1500,27 @@ chatTab.addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
   chatDropOverlay.classList.add('hidden');
-  const file = e.dataTransfer.files[0];
-  if (file) uploadForChat(file);
+  queueFilesForChat(e.dataTransfer.files);
 });
 
-function uploadForChat(file) {
-  if (!activeConversation) return;
-  chatProgressWrap.classList.remove('hidden');
-  chatProgressName.textContent = file.name;
-  chatProgressFill.style.width = '0%';
-  chatProgressPct.textContent = '0%';
-
-  uploadFileChunked(file, {
-    onProgress: (pct) => {
-      chatProgressFill.style.width = pct + '%';
-      chatProgressPct.textContent = pct + '%';
-    },
-    onComplete: (res) => {
-      chatProgressWrap.classList.add('hidden');
-      if (activeConversation.type === 'group') {
-        socket.emit('file-message', { name: res.filename, size: res.size });
-      } else {
-        socket.emit('dm-file-message', { toDeviceId: activeConversation.peerDeviceId, name: res.filename, size: res.size });
-      }
-    },
-    onError: (err) => {
-      chatProgressWrap.classList.add('hidden');
-      showToast(`Upload failed: ${err.message}`, 'error');
-    },
-  });
-}
+// ---- Paste-to-share: pasting an image or file while a conversation is open
+// queues it the same way as attaching or dropping one. ----
+document.addEventListener('paste', (e) => {
+  if (!activeConversation || conversationView.classList.contains('hidden')) return;
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  const files = [];
+  for (const item of items) {
+    if (item.kind === 'file') {
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+  }
+  if (files.length > 0) {
+    e.preventDefault();
+    queueFilesForChat(files);
+  }
+});
 
 // ============================================================
 // Files tab (browse / upload / download / delete all shared files)
@@ -976,7 +1618,8 @@ function renderFiles(files) {
     actions.className = 'file-actions';
 
     const downloadBtn = document.createElement('a');
-    downloadBtn.href = `${backendBase}/api/download/${encodeURIComponent(f.name)}`;
+    downloadBtn.href = `${backendBase}/api/download/${encodeURIComponent(f.name)}?download=1`;
+    downloadBtn.setAttribute('download', f.name);
     downloadBtn.textContent = 'Download';
     downloadBtn.className = 'btn download';
 

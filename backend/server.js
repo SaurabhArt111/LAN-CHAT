@@ -11,12 +11,41 @@ import { randomUUID } from 'crypto';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
+// ================= Data folder layout =================
+// Everything the app persists (chat history, device roster, uploaded files/media)
+// lives under backend/data/ so a whole install can be backed up, moved, or wiped
+// by handling one folder.
+const DATA_DIR = path.join(__dirname, 'data');
+const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+const MESSAGES_FILE = path.join(DATA_DIR, 'messages.json');
+const DEVICES_FILE = path.join(DATA_DIR, 'devices.json');
+
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-const MESSAGES_FILE = path.join(__dirname, 'messages.json');
+// One-time migration from the old (pre-data/) layout so upgrading in place doesn't
+// lose anyone's history or files.
+(function migrateLegacyLayout() {
+  const legacyUploads = path.join(__dirname, 'uploads');
+  const legacyMessages = path.join(__dirname, 'messages.json');
+  try {
+    if (fs.existsSync(legacyUploads) && fs.readdirSync(UPLOAD_DIR).length === 0) {
+      for (const name of fs.readdirSync(legacyUploads)) {
+        fs.renameSync(path.join(legacyUploads, name), path.join(UPLOAD_DIR, name));
+      }
+      fs.rmdirSync(legacyUploads);
+    }
+  } catch {}
+  try {
+    if (fs.existsSync(legacyMessages) && !fs.existsSync(MESSAGES_FILE)) {
+      fs.renameSync(legacyMessages, MESSAGES_FILE);
+    }
+  } catch {}
+})();
+
 const MAX_HISTORY_PER_CONVERSATION = 500;
 const PRESENCE_GRACE_MS = 5000; // don't announce "left" until this long after last connection drops
+const SYSTEM_MSG_DEDUPE_MS = 4000; // swallow a duplicate join/left for the same device in a short window
 const STALE_UPLOAD_MS = 30 * 60 * 1000; // abandoned in-progress uploads get swept after this long
 const GROUP_CONVERSATION_ID = 'group';
 
@@ -33,8 +62,8 @@ for (const name of fs.readdirSync(UPLOAD_DIR)) {
 }
 
 // ================= Chat message persistence =================
-// Every message now carries a conversationId: 'group' for the broadcast chat (unchanged
-// behavior), or a deterministic 'dm:<idA>|<idB>' id for a 1:1 conversation between two devices.
+// Every message carries a conversationId: 'group' for the broadcast chat, or a
+// deterministic 'dm:<idA>|<idB>' id for a 1:1 conversation between two devices.
 let messages = [];
 try {
   if (fs.existsSync(MESSAGES_FILE)) {
@@ -63,8 +92,18 @@ function pushMessage(msg) {
   return msg;
 }
 
+function findMessage(conversationId, id) {
+  return messages.find((m) => m.conversationId === conversationId && m.id === id);
+}
+
 function dmConversationId(deviceIdA, deviceIdB) {
   return 'dm:' + [deviceIdA, deviceIdB].sort().join('|');
+}
+
+function participantsOfConversation(conversationId) {
+  if (!conversationId || conversationId === GROUP_CONVERSATION_ID) return null; // null = everyone
+  const rest = conversationId.startsWith('dm:') ? conversationId.slice(3) : conversationId;
+  return rest.split('|');
 }
 
 // Mark every chat message that references this filename as deleted (keeps history in sync
@@ -80,6 +119,42 @@ function markFileDeletedInMessages(name) {
   }
   if (changed) saveMessages();
   return changed;
+}
+
+// ================= Device roster persistence =================
+// deviceId -> { name, sockets: Set<socketId>, leaveTimer: Timeout|null, lastSeen, publicKey }
+// Devices are never removed once seen: a device that goes offline just keeps its entry with
+// an empty `sockets` set, so its chat history / shared files stay reachable from the chat
+// list regardless of whether that person is currently online.
+const devices = new Map();
+
+function loadDevices() {
+  try {
+    if (!fs.existsSync(DEVICES_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(DEVICES_FILE, 'utf-8'));
+    for (const [deviceId, d] of Object.entries(raw)) {
+      devices.set(deviceId, {
+        name: d.name,
+        sockets: new Set(),
+        leaveTimer: null,
+        lastSeen: d.lastSeen || Date.now(),
+        publicKey: d.publicKey || null,
+      });
+    }
+  } catch {}
+}
+loadDevices();
+
+let saveDevicesTimer = null;
+function saveDevices() {
+  clearTimeout(saveDevicesTimer);
+  saveDevicesTimer = setTimeout(() => {
+    const out = {};
+    for (const [deviceId, d] of devices.entries()) {
+      out[deviceId] = { name: d.name, lastSeen: d.lastSeen, publicKey: d.publicKey || null };
+    }
+    fs.writeFile(DEVICES_FILE, JSON.stringify(out), () => {});
+  }, 300);
 }
 
 // ================= Helpers shared by upload + files listing =================
@@ -115,7 +190,11 @@ app.get('/api/download/:name', (req, res) => {
 
   const stat = fs.statSync(filePath);
   const range = req.headers.range;
-  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
+  // Inline by default (so the viewer modal can preview images/video/audio in place);
+  // pass ?download=1 to force a "Save as" download, which the frontend's download
+  // button does.
+  const disposition = req.query.download ? 'attachment' : 'inline';
+  res.setHeader('Content-Disposition', `${disposition}; filename*=UTF-8''${encodeURIComponent(name)}`);
 
   if (range) {
     const match = /bytes=(\d*)-(\d*)/.exec(range);
@@ -233,30 +312,45 @@ setInterval(async () => {
 const httpServer = createServer(app);
 const io = new Server(httpServer, { cors: { origin: '*' } });
 
-// deviceId -> { name, sockets: Set<socketId>, leaveTimer: Timeout|null, lastSeen }
-// This is the single source of truth for "who's online" — it replaces the old
-// username-keyed presence map, but keeps the same grace-period behavior.
-const devices = new Map();
-
 function broadcastPresence() {
   // Legacy-shaped event (array of display names) — kept so nothing else has to change.
   io.emit('presence', Array.from(devices.values()).map((d) => d.name));
 }
 
-function broadcastDeviceList() {
-  const list = Array.from(devices.entries()).map(([deviceId, d]) => ({
+function deviceListPayload() {
+  return Array.from(devices.entries()).map(([deviceId, d]) => ({
     deviceId,
     name: d.name,
     online: d.sockets.size > 0,
     lastSeen: d.lastSeen,
     publicKey: d.publicKey || null,
   }));
-  io.emit('devices', list);
+}
+
+function broadcastDeviceList() {
+  io.emit('devices', deviceListPayload());
 }
 
 function socketsForDevice(deviceId) {
   const d = devices.get(deviceId);
   return d ? Array.from(d.sockets) : [];
+}
+
+// Recent system-message text per conversation, so a flurry of quick reconnects (dev
+// hot-reload, a flaky wifi hiccup that still resolves within the grace period, etc.)
+// can't spam the feed with repeats of the exact same line.
+const recentSystemMsg = new Map(); // conversationId -> { text, ts }
+function pushSystemMessageDeduped(conversationId, text) {
+  const prev = recentSystemMsg.get(conversationId);
+  if (prev && prev.text === text && Date.now() - prev.ts < SYSTEM_MSG_DEDUPE_MS) return null;
+  recentSystemMsg.set(conversationId, { text, ts: Date.now() });
+  return pushMessage({
+    id: randomUUID(),
+    conversationId,
+    type: 'system',
+    text,
+    ts: Date.now(),
+  });
 }
 
 io.on('connection', (socket) => {
@@ -289,51 +383,61 @@ io.on('connection', (socket) => {
       entry.leaveTimer = null;
     }
     entry.sockets.add(socket.id);
+    saveDevices();
 
     const groupHistory = messages.filter(
       (m) => !m.conversationId || m.conversationId === GROUP_CONVERSATION_ID
     );
     socket.emit('history', groupHistory);
-    socket.emit('devices', Array.from(devices.entries()).map(([id, d]) => ({
-      deviceId: id,
-      name: d.name,
-      online: d.sockets.size > 0,
-      lastSeen: d.lastSeen,
-      publicKey: d.publicKey || null,
-    })));
+    socket.emit('devices', deviceListPayload());
     broadcastPresence();
     broadcastDeviceList();
 
     if (isFreshJoin) {
-      const sysMsg = pushMessage({
-        id: randomUUID(),
-        conversationId: GROUP_CONVERSATION_ID,
-        type: 'system',
-        text: `${name} joined`,
-        ts: Date.now(),
-      });
-      socket.broadcast.emit('message', sysMsg);
+      const sysMsg = pushSystemMessageDeduped(GROUP_CONVERSATION_ID, `${name} joined`);
+      if (sysMsg) socket.broadcast.emit('message', sysMsg);
     }
+  });
+
+  socket.on('rename', (newName) => {
+    const deviceId = socket.data.deviceId;
+    if (!deviceId || typeof newName !== 'string') return;
+    const name = newName.slice(0, 40).trim();
+    if (!name) return;
+    const entry = devices.get(deviceId);
+    if (!entry) return;
+    entry.name = name;
+    socket.data.username = name;
+    saveDevices();
+    broadcastPresence();
+    broadcastDeviceList();
   });
 
   // ---- Group chat (unchanged behavior; intentionally NOT end-to-end encrypted —
   //      broadcast/group E2EE needs group-key mechanics, a separate problem from the
   //      pairwise DM encryption below. See PROGRESS.md.) ----
-  socket.on('chat-message', (text) => {
+  socket.on('chat-message', (payload) => {
     const username = socket.data.username || 'Anonymous';
+    const isLegacy = typeof payload === 'string';
+    const text = isLegacy ? payload : payload?.text;
     if (typeof text !== 'string' || !text.trim()) return;
+    const replyTo = (!isLegacy && typeof payload.replyTo === 'string') ? payload.replyTo : null;
+    const forwarded = !isLegacy && Boolean(payload.forwarded);
     const msg = pushMessage({
       id: randomUUID(),
       conversationId: GROUP_CONVERSATION_ID,
       type: 'text',
       from: username,
+      fromDeviceId: socket.data.deviceId || null,
       text: text.slice(0, 4000),
+      replyTo,
+      forwarded,
       ts: Date.now(),
     });
     io.emit('message', msg);
   });
 
-  socket.on('file-message', ({ name, size }) => {
+  socket.on('file-message', ({ name, size, caption, replyTo, forwarded } = {}) => {
     const username = socket.data.username || 'Anonymous';
     if (!name) return;
     const msg = pushMessage({
@@ -341,8 +445,12 @@ io.on('connection', (socket) => {
       conversationId: GROUP_CONVERSATION_ID,
       type: 'file',
       from: username,
+      fromDeviceId: socket.data.deviceId || null,
       name,
       size,
+      caption: typeof caption === 'string' ? caption.slice(0, 2000) : null,
+      replyTo: typeof replyTo === 'string' ? replyTo : null,
+      forwarded: Boolean(forwarded),
       ts: Date.now(),
     });
     io.emit('message', msg);
@@ -362,14 +470,15 @@ io.on('connection', (socket) => {
     socket.emit('dm-history', { peerDeviceId, messages: history });
   });
 
-  socket.on('dm-message', ({ toDeviceId, ciphertext, iv }) => {
+  socket.on('dm-message', ({ toDeviceId, ciphertext, iv, replyTo, forwarded } = {}) => {
     const myDeviceId = socket.data.deviceId;
     const username = socket.data.username || 'Anonymous';
     if (!myDeviceId || !toDeviceId || typeof ciphertext !== 'string' || typeof iv !== 'string') return;
 
     // NOTE: this server never sees plaintext for DMs. `ciphertext`/`iv` arrived already
     // encrypted client-side (AES-GCM, key derived via ECDH — see frontend/src/crypto.js)
-    // and are relayed/persisted exactly as received.
+    // and are relayed/persisted exactly as received. `replyTo` is only a message id
+    // (structural metadata), never message content.
     const msg = pushMessage({
       id: randomUUID(),
       conversationId: dmConversationId(myDeviceId, toDeviceId),
@@ -379,6 +488,8 @@ io.on('connection', (socket) => {
       toDeviceId,
       ciphertext,
       iv,
+      replyTo: typeof replyTo === 'string' ? replyTo : null,
+      forwarded: Boolean(forwarded),
       ts: Date.now(),
     });
 
@@ -387,7 +498,7 @@ io.on('connection', (socket) => {
     io.to([...recipientSockets, ...senderSockets]).emit('message', msg);
   });
 
-  socket.on('dm-file-message', ({ toDeviceId, name, size }) => {
+  socket.on('dm-file-message', ({ toDeviceId, name, size, caption, replyTo, forwarded } = {}) => {
     const myDeviceId = socket.data.deviceId;
     const username = socket.data.username || 'Anonymous';
     if (!myDeviceId || !toDeviceId || !name) return;
@@ -401,12 +512,42 @@ io.on('connection', (socket) => {
       toDeviceId,
       name,
       size,
+      caption: typeof caption === 'string' ? caption.slice(0, 2000) : null,
+      replyTo: typeof replyTo === 'string' ? replyTo : null,
+      forwarded: Boolean(forwarded),
       ts: Date.now(),
     });
 
     const recipientSockets = socketsForDevice(toDeviceId);
     const senderSockets = socketsForDevice(myDeviceId);
     io.to([...recipientSockets, ...senderSockets]).emit('message', msg);
+  });
+
+  // ---- Delete (soft-delete; only the sender's own device can delete their own message) ----
+  socket.on('delete-message', ({ conversationId, ids } = {}) => {
+    const myDeviceId = socket.data.deviceId;
+    const username = socket.data.username || 'Anonymous';
+    if (!conversationId || !Array.isArray(ids) || ids.length === 0) return;
+
+    const removedIds = [];
+    for (const id of ids) {
+      const msg = findMessage(conversationId, id);
+      if (!msg || msg.deleted) continue;
+      const isOwner = msg.fromDeviceId ? msg.fromDeviceId === myDeviceId : msg.from === username;
+      if (!isOwner) continue;
+      msg.deleted = true;
+      removedIds.push(id);
+    }
+    if (removedIds.length === 0) return;
+    saveMessages();
+
+    const participants = participantsOfConversation(conversationId);
+    const targets = participants
+      ? participants.flatMap(socketsForDevice)
+      : null; // null => everyone (group chat)
+    const payload = { conversationId, ids: removedIds };
+    if (targets) io.to(targets).emit('message-deleted', payload);
+    else io.emit('message-deleted', payload);
   });
 
   socket.on('dm-typing', (toDeviceId) => {
@@ -427,28 +568,24 @@ io.on('connection', (socket) => {
     entry.lastSeen = Date.now();
     if (entry.sockets.size > 0) return; // still connected elsewhere (another tab)
 
+    saveDevices();
     broadcastDeviceList(); // reflect "offline" immediately, even during the leave-message grace period
 
-    // Grace period: only announce "left" in the group chat if they don't reconnect quickly
+    // Grace period: only announce "left" in the group chat if they don't reconnect quickly.
+    // The device entry itself is kept forever (not deleted) so its chat history and shared
+    // files stay reachable from the chat list even while offline.
     entry.leaveTimer = setTimeout(() => {
-      devices.delete(deviceId);
+      entry.leaveTimer = null;
       broadcastPresence();
-      broadcastDeviceList();
-      const sysMsg = pushMessage({
-        id: randomUUID(),
-        conversationId: GROUP_CONVERSATION_ID,
-        type: 'system',
-        text: `${entry.name} left`,
-        ts: Date.now(),
-      });
-      io.emit('message', sysMsg);
+      const sysMsg = pushSystemMessageDeduped(GROUP_CONVERSATION_ID, `${entry.name} left`);
+      if (sysMsg) io.emit('message', sysMsg);
     }, PRESENCE_GRACE_MS);
   });
 });
 
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`\n✅ Backend (chat + files) listening on http://0.0.0.0:${PORT}`);
-  console.log(`   Files are stored in: ${UPLOAD_DIR}\n`);
+  console.log(`   Data (chat history, devices, uploads) stored in: ${DATA_DIR}\n`);
 });
 
 // Big files over slow wifi can take a while — disable the default timeouts
