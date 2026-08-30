@@ -29,10 +29,11 @@ device runs the backend + frontend, everyone else just opens a browser.
 - **Fast large-file transfer** — files are split into 8MB chunks and uploaded several at once
   in parallel, which both speeds up transfer over LAN and makes multi-gigabyte files (tested
   well past 2-3GB) more resilient to a single flaky chunk.
-- **Notifications** — enable/disable in Settings. Uses the browser's Notification API (no
-  external push service required, since this app is meant to run over plain HTTP on a LAN
-  address rather than a publicly reachable HTTPS host) to nudge you about new messages when
-  the tab isn't focused.
+- **Notifications**: enable/disable in Settings, plus a one-time friendly prompt the first
+  time you open the app (if you haven't already been asked) offering to turn them on. Uses
+  the browser's Notification API (no external push service required, since this app is meant
+  to run over plain HTTP on a LAN address rather than a publicly reachable HTTPS host) to
+  nudge you about new messages when the tab isn't focused.
 - **Settings** — edit your display name (updates live for everyone), and pick a theme: Light,
   Dark, or System (default — follows your OS setting automatically, live).
 

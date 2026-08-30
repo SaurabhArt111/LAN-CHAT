@@ -15,8 +15,8 @@
     <div class="modal">
       <h2>👋 What should we call you?</h2>
       <p class="modal-sub">This name is shown to others on this network.</p>
-      <input id="nameInput" type="text" maxlength="40" placeholder="e.g. Priya" autocomplete="off" />
-      <button id="nameSubmit">Join</button>
+      <input id="nameInput" class="dialog-input" type="text" maxlength="40" placeholder="e.g. Priya" autocomplete="off" />
+      <button id="nameSubmit" class="dialog-btn primary">Join</button>
     </div>
   </div>
 
@@ -35,7 +35,9 @@
         </div>
         <div class="header-actions">
           <span id="myName" class="my-name"></span>
-          <button id="settingsBtn" class="icon-btn ghost" title="Settings">⚙️</button>
+          <button id="settingsBtn" class="icon-btn ghost" title="Settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
         </div>
       </div>
 
@@ -52,16 +54,28 @@
         <div class="settings-section">
           <label class="settings-label">Theme</label>
           <div class="theme-row" id="themeRow">
-            <button type="button" class="theme-option" data-theme="light">☀️ Light</button>
-            <button type="button" class="theme-option" data-theme="dark">🌙 Dark</button>
-            <button type="button" class="theme-option" data-theme="system">🖥️ System</button>
+            <button type="button" class="theme-option" data-theme="light">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+              Light
+            </button>
+            <button type="button" class="theme-option" data-theme="dark">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+              Dark
+            </button>
+            <button type="button" class="theme-option" data-theme="system">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+              System
+            </button>
           </div>
         </div>
 
         <div class="settings-section">
           <label class="settings-label">Notifications</label>
           <div class="notif-row">
-            <span id="notifStatusText" class="notif-status-text">Notifications are off</span>
+            <span id="notifStatusText" class="notif-status-text">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+              <span id="notifStatusLabel">Notifications are off</span>
+            </span>
             <button type="button" id="notifToggleBtn" class="notif-toggle-btn">Enable</button>
           </div>
           <p class="settings-hint" id="notifHint">Get notified about new messages when this tab isn't focused.</p>
@@ -94,7 +108,9 @@
       <!-- ---- Conversation view (shared by Group + any 1:1 DM) ---- -->
       <div id="conversationView" class="conversation-view hidden">
         <div class="conversation-header">
-          <button id="backToListBtn" class="icon-btn ghost" title="Back">←</button>
+          <button id="backToListBtn" class="icon-btn ghost" title="Back">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
           <div class="conversation-title">
             <span id="conversationName">Group</span>
             <span id="conversationSubtitle" class="conversation-subtitle"></span>
@@ -121,12 +137,20 @@
 
         <!-- Multi-select action bar -->
         <div id="selectionBar" class="selection-bar hidden">
-          <button id="selectionCancelBtn" class="icon-btn ghost" title="Cancel">✕</button>
+          <button id="selectionCancelBtn" class="icon-btn ghost" title="Cancel">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
           <span id="selectionCount" class="selection-count">0 selected</span>
           <div class="selection-actions">
-            <button id="selectionCopyBtn" class="selection-action-btn" title="Copy">📋</button>
-            <button id="selectionForwardBtn" class="selection-action-btn" title="Forward">↪️</button>
-            <button id="selectionDeleteBtn" class="selection-action-btn danger" title="Delete">🗑️</button>
+            <button id="selectionCopyBtn" class="selection-action-btn" title="Copy">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+            <button id="selectionForwardBtn" class="selection-action-btn" title="Forward">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/></svg>
+            </button>
+            <button id="selectionDeleteBtn" class="selection-action-btn danger" title="Delete">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
           </div>
         </div>
 
@@ -147,13 +171,19 @@
             <span id="replyBarFrom" class="reply-bar-from"></span>
             <span id="replyBarText" class="reply-bar-text"></span>
           </div>
-          <button type="button" id="replyBarCancel" class="icon-btn ghost" title="Cancel reply">✕</button>
+          <button type="button" id="replyBarCancel" class="icon-btn ghost" title="Cancel reply">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
         </div>
 
         <form id="chatForm" class="chat-input-row">
-          <button type="button" id="attachBtn" class="icon-btn" title="Attach a file">📎</button>
+          <button type="button" id="attachBtn" class="icon-btn" title="Attach a file">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          </button>
           <input id="chatInput" type="text" placeholder="Type a message" autocomplete="off" />
-          <button type="submit" class="icon-btn send-btn" title="Send">➤</button>
+          <button type="submit" class="icon-btn send-btn" title="Send">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
           <input id="chatFileInput" type="file" hidden multiple />
         </form>
       </div>
@@ -180,7 +210,9 @@
       <section class="files-section">
         <div class="files-header">
           <h2>Shared files</h2>
-          <button id="refreshBtn" title="Refresh list">⟳</button>
+          <button id="refreshBtn" title="Refresh list">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          </button>
         </div>
         <ul id="fileList" class="file-list"></ul>
         <p id="emptyState" class="empty-state hidden">No files yet — upload something above.</p>
@@ -193,7 +225,9 @@
     <div class="modal attach-modal">
       <div class="attach-modal-header">
         <span id="attachModalTitle">Send file</span>
-        <button type="button" id="attachModalClose" class="icon-btn ghost" title="Close">✕</button>
+        <button type="button" id="attachModalClose" class="icon-btn ghost" title="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
       <ul id="attachPreviewList" class="attach-preview-list"></ul>
       <div id="attachSendProgressWrap" class="progress-wrap hidden">
@@ -203,33 +237,53 @@
       </div>
       <div class="attach-modal-composer">
         <input id="attachCaptionInput" type="text" placeholder="Add a message…" autocomplete="off" />
-        <button type="button" id="attachSendBtn" class="icon-btn send-btn" title="Send">➤</button>
+        <button type="button" id="attachSendBtn" class="icon-btn send-btn" title="Send">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
       </div>
     </div>
   </div>
 
   <!-- ===================== Media / file viewer modal ===================== -->
-  <div id="viewerModal" class="modal-overlay hidden">
-    <div class="viewer-modal">
-      <div class="viewer-header">
-        <span id="viewerName" class="viewer-name"></span>
-        <div class="viewer-header-actions">
-          <a id="viewerDownloadBtn" class="icon-btn ghost" title="Download">⬇️</a>
-          <button type="button" id="viewerCloseBtn" class="icon-btn ghost" title="Close">✕</button>
-        </div>
-      </div>
-      <div id="viewerBody" class="viewer-body"></div>
-      <div id="viewerMeta" class="viewer-meta"></div>
+  <div id="viewerModal" class="viewer-modal hidden">
+    <div class="viewer-header">
+      <span id="viewerName" class="viewer-name"></span>
+      <button type="button" id="viewerCloseBtn" class="icon-btn ghost" title="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div id="viewerBody" class="viewer-body"></div>
+    <div class="viewer-footer">
+      <span id="viewerMeta" class="viewer-meta"></span>
+      <a id="viewerDownloadBtn" class="viewer-download-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download
+      </a>
     </div>
   </div>
 
   <!-- ===================== Message / file context menu ===================== -->
   <div id="contextMenu" class="context-menu hidden">
-    <button type="button" data-action="reply">↩️ Reply</button>
-    <button type="button" data-action="forward">↪️ Forward</button>
-    <button type="button" data-action="copy">📋 Copy</button>
-    <button type="button" data-action="delete" class="danger">🗑️ Delete</button>
-    <button type="button" data-action="select">☑️ Select</button>
+    <button type="button" data-action="reply">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
+      Reply
+    </button>
+    <button type="button" data-action="forward">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/></svg>
+      Forward
+    </button>
+    <button type="button" data-action="copy">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      Copy
+    </button>
+    <button type="button" data-action="delete" class="danger">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      Delete
+    </button>
+    <button type="button" data-action="select">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      Select
+    </button>
   </div>
 
   <!-- ===================== Forward picker modal ===================== -->
@@ -237,8 +291,8 @@
     <div class="modal forward-modal">
       <h2>Forward to…</h2>
       <ul id="forwardList" class="forward-list"></ul>
-      <button id="forwardConfirmBtn" disabled>Forward</button>
-      <button id="forwardCancelBtn" class="secondary-btn">Cancel</button>
+      <button id="forwardConfirmBtn" class="dialog-btn primary" disabled>Forward</button>
+      <button id="forwardCancelBtn" class="dialog-btn secondary">Cancel</button>
     </div>
   </div>
 

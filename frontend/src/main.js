@@ -24,6 +24,36 @@ function showToast(message, kind = 'info', duration = 3500) {
   }, duration);
 }
 
+// A toast with an inline action button (e.g. "Turn on notifications?" → Enable),
+// instead of just an FYI message. Stays up until the person acts or dismisses it.
+function showActionToast(message, actionLabel, onAction, onDismiss) {
+  const el = document.createElement('div');
+  el.className = 'toast toast-info toast-action';
+  const text = document.createElement('span');
+  text.textContent = message;
+  const actions = document.createElement('div');
+  actions.className = 'toast-action-buttons';
+  const actionBtn = document.createElement('button');
+  actionBtn.type = 'button';
+  actionBtn.className = 'toast-action-btn';
+  actionBtn.textContent = actionLabel;
+  const dismissBtn = document.createElement('button');
+  dismissBtn.type = 'button';
+  dismissBtn.className = 'toast-dismiss-btn';
+  dismissBtn.textContent = 'Not now';
+  actions.append(actionBtn, dismissBtn);
+  el.append(text, actions);
+  toastHost.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+
+  function remove() {
+    el.classList.remove('show');
+    setTimeout(() => el.remove(), 250);
+  }
+  actionBtn.addEventListener('click', () => { remove(); onAction?.(); });
+  dismissBtn.addEventListener('click', () => { remove(); onDismiss?.(); });
+}
+
 // ============================================================
 // Theme: Light / Dark / System (default). Applied via a `data-theme` attribute
 // on <html>, which style.css keys off of. "System" tracks the OS preference
@@ -63,8 +93,10 @@ document.getElementById('themeRow').addEventListener('click', (e) => {
 // we actually surface anything once permission is granted.
 // ============================================================
 const NOTIF_PREF_KEY = 'lan-share-notifications';
+const NOTIF_ASKED_KEY = 'lan-share-notifications-asked';
 const notifToggleBtn = document.getElementById('notifToggleBtn');
 const notifStatusText = document.getElementById('notifStatusText');
+const notifStatusLabel = document.getElementById('notifStatusLabel');
 const notifHint = document.getElementById('notifHint');
 const notificationsSupported = 'Notification' in window;
 let notificationsEnabled = localStorage.getItem(NOTIF_PREF_KEY) === 'on'
@@ -73,33 +105,28 @@ let notificationsEnabled = localStorage.getItem(NOTIF_PREF_KEY) === 'on'
 
 function updateNotifUI() {
   if (!notificationsSupported) {
-    notifStatusText.textContent = 'Not supported in this browser';
+    notifStatusLabel.textContent = 'Not supported in this browser';
     notifToggleBtn.classList.add('hidden');
     notifHint.textContent = 'This browser does not support desktop notifications.';
     return;
   }
   if (Notification.permission === 'denied') {
-    notifStatusText.textContent = 'Blocked in browser settings';
+    notifStatusLabel.textContent = 'Blocked in browser settings';
     notifToggleBtn.classList.add('hidden');
     notifHint.textContent = 'Notifications were blocked for this site — re-enable them from your browser\'s site settings.';
     return;
   }
   notifToggleBtn.classList.remove('hidden');
-  notifStatusText.textContent = notificationsEnabled ? 'Notifications are on' : 'Notifications are off';
+  notifStatusLabel.textContent = notificationsEnabled ? 'Notifications are on' : 'Notifications are off';
   notifToggleBtn.textContent = notificationsEnabled ? 'Disable' : 'Enable';
   notifToggleBtn.classList.toggle('on', notificationsEnabled);
   notifHint.textContent = "Get notified about new messages when this tab isn't focused.";
 }
 updateNotifUI();
 
-notifToggleBtn.addEventListener('click', async () => {
-  if (!notificationsSupported) return;
-  if (notificationsEnabled) {
-    notificationsEnabled = false;
-    localStorage.setItem(NOTIF_PREF_KEY, 'off');
-    updateNotifUI();
-    return;
-  }
+async function requestNotificationPermission() {
+  if (!notificationsSupported) return false;
+  localStorage.setItem(NOTIF_ASKED_KEY, '1');
   const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
   if (permission === 'granted') {
     notificationsEnabled = true;
@@ -110,7 +137,35 @@ notifToggleBtn.addEventListener('click', async () => {
     if (permission === 'denied') showToast('Notifications were blocked by the browser.', 'error');
   }
   updateNotifUI();
+  return permission === 'granted';
+}
+
+notifToggleBtn.addEventListener('click', async () => {
+  if (!notificationsSupported) return;
+  if (notificationsEnabled) {
+    notificationsEnabled = false;
+    localStorage.setItem(NOTIF_PREF_KEY, 'off');
+    updateNotifUI();
+    return;
+  }
+  await requestNotificationPermission();
 });
+
+// Proactive nudge: if notifications are supported and the browser hasn't been asked
+// yet (and hasn't already been explicitly turned off), offer to turn them on rather
+// than leaving it buried in Settings. Shown once per page load, a couple seconds in
+// so it doesn't compete with the initial connect/join flow.
+function maybeOfferNotifications() {
+  if (!notificationsSupported) return;
+  if (Notification.permission !== 'default') return; // already granted or denied — nothing to ask
+  if (localStorage.getItem(NOTIF_ASKED_KEY)) return; // already asked this browser before
+  showActionToast(
+    'Turn on notifications for new messages?',
+    'Enable',
+    async () => { await requestNotificationPermission(); },
+    () => { localStorage.setItem(NOTIF_ASKED_KEY, '1'); }
+  );
+}
 
 function notifyIncomingMessage(msg, conversationLabel) {
   if (!notificationsEnabled || !notificationsSupported || Notification.permission !== 'granted') return;
@@ -332,6 +387,7 @@ function dmConversationId(a, b) {
 }
 
 let socket = null;
+let hasOfferedNotifications = false;
 let deviceList = []; // [{deviceId, name, online, lastSeen}]
 const messagesByConversation = new Map(); // conversationId -> array of messages (live cache)
 const unreadConversations = new Set();
@@ -352,6 +408,10 @@ function connectSocket() {
     setConnStatus('connected');
     await myPrivateKeyPromise; // make sure our keypair exists before announcing it
     socket.emit('join', { username, deviceId, publicKey: myPublicKeyBase64 });
+    if (!hasOfferedNotifications) {
+      hasOfferedNotifications = true;
+      setTimeout(maybeOfferNotifications, 2500);
+    }
   });
 
   socket.on('disconnect', () => setConnStatus('disconnected'));
@@ -1032,8 +1092,8 @@ let contextMenuMsg = null;
 function openContextMenu(x, y, msg) {
   contextMenuMsg = msg;
   const mine = isMine(msg);
-  const isDeletedFile = msg.type === 'file' && msg.deleted;
-  contextMenu.querySelector('[data-action="delete"]').classList.toggle('hidden', !mine || isDeletedFile);
+  const isDeletedFile = msg.type === 'file' && Boolean(msg.deleted);
+  contextMenu.querySelector('[data-action="delete"]').classList.toggle('hidden', Boolean(!mine || isDeletedFile));
   contextMenu.querySelector('[data-action="copy"]').classList.toggle('hidden', isDeletedFile);
   contextMenu.querySelector('[data-action="forward"]').classList.toggle('hidden', isDeletedFile);
   contextMenu.querySelector('[data-action="reply"]').classList.toggle('hidden', isDeletedFile);
@@ -1224,8 +1284,23 @@ function closeViewer() {
   viewerBody.innerHTML = '';
 }
 document.getElementById('viewerCloseBtn').addEventListener('click', closeViewer);
+// Click-outside-to-close: clicking the dark empty space around the media (not the
+// media itself, and not the header/footer controls) closes the viewer.
+viewerBody.addEventListener('click', (e) => {
+  if (e.target === viewerBody) closeViewer();
+});
 viewerModal.addEventListener('click', (e) => {
   if (e.target === viewerModal) closeViewer();
+});
+
+// Escape closes whichever overlay is currently open, top-most first.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!viewerModal.classList.contains('hidden')) closeViewer();
+  else if (!attachPreviewModal.classList.contains('hidden')) closeAttachPreview();
+  else if (!forwardModal.classList.contains('hidden')) forwardModal.classList.add('hidden');
+  else if (!contextMenu.classList.contains('hidden')) closeContextMenu();
+  else if (selectionMode) exitSelectionMode();
 });
 
 chatForm.addEventListener('submit', async (e) => {
