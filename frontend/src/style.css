@@ -29,7 +29,17 @@ html[data-theme="light"] {
 }
 
 html[data-theme="light"] .msg-time {
-  color: rgba(0, 0, 0, 0.4);
+  color: rgba(0, 0, 0, 0.45);
+}
+
+html[data-theme="light"] .msg-text,
+html[data-theme="light"] .msg-file-name,
+html[data-theme="light"] .msg-file-size,
+html[data-theme="light"] .selection-count,
+html[data-theme="light"] .context-menu button,
+html[data-theme="light"] .forward-item-name,
+html[data-theme="light"] .viewer-generic {
+  color: var(--text);
 }
 
 html[data-theme="light"] .conn-dot.connecting,
@@ -1034,6 +1044,35 @@ header h1 {
   font-size: 11px;
   color: var(--muted);
   user-select: none;
+}
+
+.bubble-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transition: opacity 0.15s ease, max-height 0.15s ease;
+}
+
+.bubble:hover .bubble-actions,
+.bubble:focus-within .bubble-actions {
+  opacity: 1;
+  max-height: 40px;
+  pointer-events: auto;
+}
+
+.bubble-action-btn {
+  border: none;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.18);
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .msg-image {

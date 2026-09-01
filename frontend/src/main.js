@@ -99,9 +99,33 @@ const notifStatusText = document.getElementById('notifStatusText');
 const notifStatusLabel = document.getElementById('notifStatusLabel');
 const notifHint = document.getElementById('notifHint');
 const notificationsSupported = 'Notification' in window;
+const faviconLink = document.querySelector('link[rel="icon"]');
 let notificationsEnabled = localStorage.getItem(NOTIF_PREF_KEY) === 'on'
   && notificationsSupported
   && Notification.permission === 'granted';
+
+function makeUnreadFavicon(count) {
+  const safeCount = Math.min(count, 99);
+  const label = safeCount >= 99 ? '99+' : String(safeCount);
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+      <rect width="64" height="64" rx="14" fill="#0f766e"/>
+      <path d="M16 27a23 23 0 0 1 32 0M22 34a14 14 0 0 1 20 0M29 41a5 5 0 0 1 6 0" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="32" cy="49" r="3" fill="#fff"/>
+      <circle cx="50" cy="14" r="12" fill="#ef4444"/>
+      <text x="50" y="18" text-anchor="middle" font-size="12" font-weight="700" fill="#fff" font-family="Arial, sans-serif">${label}</text>
+    </svg>
+  `;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
+function updateTabBadge() {
+  const count = unreadConversations.size;
+  document.title = count > 0 ? `(${count}) LAN Chat` : 'LAN Chat';
+  if (faviconLink) {
+    faviconLink.href = count > 0 ? makeUnreadFavicon(count) : '/favicon.svg';
+  }
+}
 
 function updateNotifUI() {
   if (!notificationsSupported) {
@@ -756,6 +780,7 @@ mergeDevicesBtn?.addEventListener('click', async () => {
 
 function renderChatList() {
   chatListEl.innerHTML = '';
+  updateTabBadge();
 
   const rows = [{ kind: 'group' }, ...deviceList.map((d) => ({ kind: 'dm', device: d }))];
 
@@ -1097,10 +1122,10 @@ function renderMessage(msg) {
         });
         bubble.appendChild(img);
 
-        const caption = document.createElement('div');
-        caption.className = 'msg-file-size';
-        caption.textContent = formatBytes(msg.size || 0);
-        bubble.appendChild(caption);
+        const meta = document.createElement('div');
+        meta.className = 'msg-file-size';
+        meta.textContent = formatBytes(msg.size || 0);
+        bubble.appendChild(meta);
       } else {
         const fileEl = document.createElement('div');
         fileEl.className = 'msg-file';
@@ -1116,6 +1141,19 @@ function renderMessage(msg) {
         });
         bubble.appendChild(fileEl);
       }
+
+      const actions = document.createElement('div');
+      actions.className = 'bubble-actions';
+      const downloadBtn = document.createElement('button');
+      downloadBtn.type = 'button';
+      downloadBtn.className = 'bubble-action-btn';
+      downloadBtn.textContent = 'Download';
+      downloadBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        downloadMessage(msg);
+      });
+      actions.appendChild(downloadBtn);
+      bubble.appendChild(actions);
     }
     if (msg.caption) {
       const captionEl = document.createElement('div');
@@ -1240,9 +1278,16 @@ function toggleSelect(id) {
 function updateSelectionBar() {
   if (!selectionMode) return;
   selectionBar.classList.remove('hidden');
+  const downloadCandidates = getDownloadCandidates([...selectedIds]);
+  const canDownload = downloadCandidates.length > 0 && downloadCandidates.length === [...selectedIds].filter((id) => {
+    const msg = getMessageById(currentConversationId(), id);
+    return msg && msg.type === 'file' && !msg.deleted;
+  }).length;
+  document.getElementById('selectionDownloadBtn').hidden = !canDownload;
   selectionCount.textContent = `${selectedIds.size} selected`;
 }
 document.getElementById('selectionCancelBtn').addEventListener('click', exitSelectionMode);
+document.getElementById('selectionDownloadBtn').addEventListener('click', () => downloadMessages([...selectedIds]));
 document.getElementById('selectionCopyBtn').addEventListener('click', () => copyMessages([...selectedIds]));
 document.getElementById('selectionForwardBtn').addEventListener('click', () => openForwardModal([...selectedIds]));
 document.getElementById('selectionDeleteBtn').addEventListener('click', () => deleteMessages([...selectedIds]));
@@ -1257,7 +1302,9 @@ function openContextMenu(x, y, msg) {
   contextMenuMsg = msg;
   const mine = isMine(msg);
   const isDeletedFile = msg.type === 'file' && Boolean(msg.deleted);
+  const canDownload = msg.type === 'file' && !isDeletedFile;
   contextMenu.querySelector('[data-action="delete"]').classList.toggle('hidden', Boolean(!mine || isDeletedFile));
+  contextMenu.querySelector('[data-action="download"]').classList.toggle('hidden', !canDownload);
   contextMenu.querySelector('[data-action="copy"]').classList.toggle('hidden', isDeletedFile);
   contextMenu.querySelector('[data-action="forward"]').classList.toggle('hidden', isDeletedFile);
   contextMenu.querySelector('[data-action="reply"]').classList.toggle('hidden', isDeletedFile);
@@ -1282,10 +1329,49 @@ contextMenu.addEventListener('click', (e) => {
   closeContextMenu();
   if (action === 'reply') startReply(msg);
   else if (action === 'forward') openForwardModal([msg.id]);
+  else if (action === 'download') downloadMessage(msg);
   else if (action === 'copy') copyMessages([msg.id]);
   else if (action === 'delete') deleteMessages([msg.id]);
   else if (action === 'select') enterSelectionMode(msg.id);
 });
+
+function getDownloadCandidates(ids) {
+  const cid = currentConversationId();
+  return ids
+    .map((id) => getMessageById(cid, id))
+    .filter((msg) => msg && msg.type === 'file' && !msg.deleted)
+    .filter((msg, index, arr) => arr.findIndex((item) => item.id === msg.id) === index);
+}
+
+function shouldAllowDownloadSelection(ids) {
+  const selected = [...ids];
+  if (selected.length === 0) return false;
+  return selected.every((id) => {
+    const msg = getMessageById(currentConversationId(), id);
+    return msg && msg.type === 'file' && !msg.deleted;
+  });
+}
+
+function downloadMessage(msg) {
+  if (!msg || msg.type !== 'file' || msg.deleted) return;
+  const a = document.createElement('a');
+  const url = `${backendBase}/api/download/${encodeURIComponent(msg.name)}?download=1`;
+  a.href = url;
+  a.download = msg.name;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function downloadMessages(ids) {
+  const selected = [...ids];
+  if (!shouldAllowDownloadSelection(selected)) return;
+  const candidates = getDownloadCandidates(selected);
+  if (candidates.length === 0) return;
+  candidates.forEach((msg) => downloadMessage(msg));
+  exitSelectionMode();
+}
 
 // ============================================================
 // Copy / delete / forward — all operate on 1+ message ids from the active conversation
