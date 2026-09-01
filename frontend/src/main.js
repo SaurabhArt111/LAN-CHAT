@@ -198,7 +198,10 @@ const nameEditInput = document.getElementById('nameEditInput');
 settingsBtn.addEventListener('click', () => {
   const opening = settingsPanel.classList.contains('hidden');
   settingsPanel.classList.toggle('hidden');
-  if (opening) nameEditInput.value = username;
+  if (opening) {
+    nameEditInput.value = username;
+    renderDeviceMergeList();
+  }
 });
 
 document.getElementById('saveBackend').addEventListener('click', () => {
@@ -211,7 +214,7 @@ document.getElementById('saveName').addEventListener('click', () => {
   const val = nameEditInput.value.trim().slice(0, 40);
   if (!val || val === username) return;
   username = val;
-  localStorage.setItem('lan-share-username', username);
+  idStore.set('lan-share-username', username);
   myNameEl.textContent = username;
   if (socket) socket.emit('rename', username);
   showToast('Display name updated.', 'info');
@@ -219,6 +222,68 @@ document.getElementById('saveName').addEventListener('click', () => {
 nameEditInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') document.getElementById('saveName').click();
 });
+
+// ============================================================
+// Identity storage: cookie-backed, not just localStorage.
+//
+// Why: localStorage is scoped per full origin (protocol + hostname + PORT).
+// During dev, Vite bumps its port every time 5173 is busy (5174, 5175, ...),
+// so a plain localStorage.getItem('lan-share-device-id') looks empty on the
+// new port and the app mints a brand-new device identity — even though it's
+// the exact same browser on the exact same machine. That's how the roster
+// ends up with "Saurabh", "Saurabh", "Sau mobile" as three separate rows for
+// what's really one or two people.
+//
+// Cookies, by contrast, are scoped per hostname + path only — the port is
+// NOT part of a cookie's scope. So a cookie set while on localhost:5173 is
+// still readable from localhost:5174. We use cookies as the source of truth
+// for identity (device id, keypair, username, trusted-peer-key cache) and
+// mirror into localStorage as a same-port fallback for browsers/contexts
+// where cookies are blocked. Non-identity prefs (theme, notification opt-in,
+// backend URL) stay plain localStorage — losing those across a port bump is
+// harmless, unlike silently forking your identity.
+// ============================================================
+function setCookie(name, value, days) {
+  try {
+    const maxAge = days * 24 * 60 * 60;
+    document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${maxAge}; SameSite=Lax`;
+  } catch {}
+}
+function getCookie(name) {
+  try {
+    const prefix = name + '=';
+    for (const part of document.cookie.split(';')) {
+      const c = part.trim();
+      if (c.startsWith(prefix)) return decodeURIComponent(c.slice(prefix.length));
+    }
+  } catch {}
+  return null;
+}
+
+const IDENTITY_COOKIE_DAYS = 3650; // effectively "forever"
+const idStore = {
+  get(key) {
+    const fromCookie = getCookie(key);
+    if (fromCookie !== null) {
+      // Keep localStorage mirrored so an older port-specific value doesn't
+      // shadow the cookie if cookies ever become unavailable later.
+      try { localStorage.setItem(key, fromCookie); } catch {}
+      return fromCookie;
+    }
+    // No cookie yet (first run on this browser, or cookies were only just
+    // introduced by an app update) — fall back to whatever this exact origin
+    // already has in localStorage, and promote it to a cookie so every other
+    // port shares it from now on.
+    let fromLocal = null;
+    try { fromLocal = localStorage.getItem(key); } catch {}
+    if (fromLocal !== null) setCookie(key, fromLocal, IDENTITY_COOKIE_DAYS);
+    return fromLocal;
+  },
+  set(key, value) {
+    setCookie(key, value, IDENTITY_COOKIE_DAYS);
+    try { localStorage.setItem(key, value); } catch {}
+  },
+};
 
 // ============================================================
 // Device identity (persistent per browser/install) + display name
@@ -232,10 +297,10 @@ function createDeviceId() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-let deviceId = localStorage.getItem('lan-share-device-id');
+let deviceId = idStore.get('lan-share-device-id');
 if (!deviceId) {
   deviceId = createDeviceId();
-  localStorage.setItem('lan-share-device-id', deviceId);
+  idStore.set('lan-share-device-id', deviceId);
 }
 
 // ============================================================
@@ -245,18 +310,18 @@ if (!deviceId) {
 // per-origin and never sent over the network — only the public key is ever
 // transmitted, via the server's device list). See crypto.js for the primitives.
 // ============================================================
-let myPublicKeyBase64 = localStorage.getItem('lan-share-public-key');
+let myPublicKeyBase64 = idStore.get('lan-share-public-key');
 let myPrivateKeyPromise;
 {
-  const storedPrivateJwk = localStorage.getItem('lan-share-private-key-jwk');
+  const storedPrivateJwk = idStore.get('lan-share-private-key-jwk');
   if (storedPrivateJwk && myPublicKeyBase64) {
     myPrivateKeyPromise = importPrivateKey(JSON.parse(storedPrivateJwk));
   } else {
     myPrivateKeyPromise = (async () => {
       const kp = await generateDeviceKeypair();
       myPublicKeyBase64 = kp.publicKeyBase64;
-      localStorage.setItem('lan-share-public-key', kp.publicKeyBase64);
-      localStorage.setItem('lan-share-private-key-jwk', JSON.stringify(kp.privateKeyJwk));
+      idStore.set('lan-share-public-key', kp.publicKeyBase64);
+      idStore.set('lan-share-private-key-jwk', JSON.stringify(kp.privateKeyJwk));
       return importPrivateKey(kp.privateKeyJwk);
     })();
   }
@@ -265,9 +330,9 @@ let myPrivateKeyPromise;
 // Trust-on-first-use pinning: remember each peer's public key the first time we see
 // it, and flag (rather than silently accept) if it ever changes — that's how a
 // substituted/spoofed identity gets caught instead of silently trusted.
-const knownPeerKeys = JSON.parse(localStorage.getItem('lan-share-known-peer-keys') || '{}');
+const knownPeerKeys = JSON.parse(idStore.get('lan-share-known-peer-keys') || '{}');
 function saveKnownPeerKeys() {
-  localStorage.setItem('lan-share-known-peer-keys', JSON.stringify(knownPeerKeys));
+  idStore.set('lan-share-known-peer-keys', JSON.stringify(knownPeerKeys));
 }
 const peerKeyChanged = new Set(); // deviceIds whose public key changed since we last trusted it
 const conversationKeyCache = new Map(); // deviceId -> { aesKey, fingerprint }
@@ -326,7 +391,7 @@ const nameModal = document.getElementById('nameModal');
 const nameInput = document.getElementById('nameInput');
 const myNameEl = document.getElementById('myName');
 
-let username = localStorage.getItem('lan-share-username') || '';
+let username = idStore.get('lan-share-username') || '';
 
 function showNameModal() {
   nameModal.style.display = 'flex';
@@ -345,7 +410,7 @@ function submitName() {
   const val = nameInput.value.trim();
   if (!val) return;
   username = val.slice(0, 40);
-  localStorage.setItem('lan-share-username', username);
+  idStore.set('lan-share-username', username);
   myNameEl.textContent = username;
   hideNameModal();
   connectSocket();
@@ -439,6 +504,7 @@ function connectSocket() {
     }
 
     renderChatList();
+    renderDeviceMergeList();
     if (activeConversation?.type === 'dm') {
       updateConversationSubtitle();
       updateEncryptionUI();
@@ -589,6 +655,104 @@ function timeAgo(ts) {
   if (hrs < 24) return `${hrs}h ago`;
   return new Date(ts).toLocaleDateString();
 }
+
+// ============================================================
+// Settings → Devices: merge duplicate device entries.
+//
+// Cookies fix this going forward, but anyone who already accumulated
+// duplicate rows (from before that fix, or from genuinely reinstalling/
+// clearing cookies) needs a way to clean the roster up. This lets them
+// tick 2+ rows they know are the same physical device and fold them
+// together — history moves onto whichever selected device was seen most
+// recently, and the others disappear from the roster.
+// ============================================================
+const deviceMergeListEl = document.getElementById('deviceMergeList');
+const mergeDevicesBtn = document.getElementById('mergeDevicesBtn');
+const selectedForMerge = new Set();
+
+function renderDeviceMergeList() {
+  if (!deviceMergeListEl) return;
+  // Drop selections for devices that no longer exist (merged elsewhere, etc.)
+  for (const id of [...selectedForMerge]) {
+    if (!deviceList.some((d) => d.deviceId === id)) selectedForMerge.delete(id);
+  }
+
+  deviceMergeListEl.innerHTML = '';
+  if (deviceList.length < 2) {
+    const empty = document.createElement('p');
+    empty.className = 'device-merge-empty';
+    empty.textContent = 'Need at least two other devices on the roster to merge.';
+    deviceMergeListEl.appendChild(empty);
+  } else {
+    for (const d of [...deviceList].sort((a, b) => b.lastSeen - a.lastSeen)) {
+      const li = document.createElement('li');
+      li.className = 'device-merge-row';
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = selectedForMerge.has(d.deviceId);
+      checkbox.addEventListener('click', (e) => e.stopPropagation());
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) selectedForMerge.add(d.deviceId);
+        else selectedForMerge.delete(d.deviceId);
+        mergeDevicesBtn.disabled = selectedForMerge.size < 2;
+      });
+
+      const info = document.createElement('div');
+      info.className = 'device-merge-row-info';
+      const nameEl = document.createElement('span');
+      nameEl.className = 'device-merge-row-name';
+      nameEl.textContent = d.name;
+      const metaEl = document.createElement('span');
+      metaEl.className = 'device-merge-row-meta';
+      metaEl.textContent = d.online ? 'Online' : `last seen ${timeAgo(d.lastSeen)}`;
+      info.append(nameEl, metaEl);
+
+      li.append(checkbox, info);
+      li.addEventListener('click', () => checkbox.click());
+      deviceMergeListEl.appendChild(li);
+    }
+  }
+
+  mergeDevicesBtn.disabled = selectedForMerge.size < 2;
+}
+
+mergeDevicesBtn?.addEventListener('click', async () => {
+  const ids = [...selectedForMerge];
+  if (ids.length < 2) return;
+
+  const selectedDevices = ids
+    .map((id) => deviceList.find((d) => d.deviceId === id))
+    .filter(Boolean)
+    .sort((a, b) => b.lastSeen - a.lastSeen);
+  if (selectedDevices.length < 2) return;
+
+  // Keep whichever selected device was seen most recently; fold the rest into it.
+  const keep = selectedDevices[0];
+  const mergeIds = selectedDevices.slice(1).map((d) => d.deviceId);
+  const otherNames = selectedDevices.slice(1).map((d) => d.name).join(', ');
+
+  if (!confirm(`Merge ${otherNames} into "${keep.name}"? Their chat history will move onto "${keep.name}" and the duplicate rows will be removed. This can't be undone.`)) {
+    return;
+  }
+
+  mergeDevicesBtn.disabled = true;
+  try {
+    const res = await fetch(`${backendBase}/api/devices/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keepId: keep.deviceId, mergeIds }),
+    });
+    if (!res.ok) throw new Error('merge failed');
+    selectedForMerge.clear();
+    showToast(`Merged into "${keep.name}".`, 'info');
+    // The server broadcasts an updated device list to everyone (including us),
+    // which re-renders both the chat list and this panel.
+  } catch {
+    showToast("Couldn't reach the backend to merge those devices.", 'error');
+    mergeDevicesBtn.disabled = selectedForMerge.size < 2;
+  }
+});
 
 function renderChatList() {
   chatListEl.innerHTML = '';

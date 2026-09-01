@@ -172,6 +172,60 @@ function dedupedName(original) {
   return name;
 }
 
+// ================= Merge duplicate device entries =================
+// Root-cause fix (frontend now persists identity in a port-agnostic cookie
+// instead of per-origin localStorage) stops *new* duplicates. This endpoint
+// cleans up devices that already got split into multiple rows before that
+// fix landed — e.g. the same laptop showing up as "Saurabh", "Saurabh", and
+// "Sau mobile" because each Vite dev-server restart picked a new port and
+// therefore looked like a brand-new browser with no stored device id.
+//
+// Body: { keepId: string, mergeIds: string[] }
+// Effect: every message authored by / addressed to a mergeIds device is
+// rewritten to keepId (DM conversation ids are recomputed accordingly, so
+// history lands in keepId's DM thread with that peer), then the mergeIds
+// device entries are dropped from the roster.
+
+app.post('/api/devices/merge', express.json(), (req, res) => {
+  const { keepId, mergeIds } = req.body || {};
+  if (typeof keepId !== 'string' || !Array.isArray(mergeIds) || mergeIds.length === 0) {
+    return res.status(400).json({ error: 'keepId and a non-empty mergeIds array are required' });
+  }
+  const mergeSet = new Set(mergeIds.filter((id) => typeof id === 'string' && id !== keepId));
+  if (mergeSet.size === 0) return res.status(400).json({ error: 'Nothing to merge' });
+  if (!devices.has(keepId)) return res.status(404).json({ error: 'keepId is not a known device' });
+
+  const remap = (id) => (mergeSet.has(id) ? keepId : id);
+
+  for (const msg of messages) {
+    let touched = false;
+    if (msg.fromDeviceId && mergeSet.has(msg.fromDeviceId)) { msg.fromDeviceId = keepId; touched = true; }
+    if (msg.toDeviceId && mergeSet.has(msg.toDeviceId)) { msg.toDeviceId = keepId; touched = true; }
+    if (touched && msg.conversationId && msg.conversationId.startsWith('dm:')) {
+      const [a, b] = participantsOfConversation(msg.conversationId).map(remap);
+      msg.conversationId = dmConversationId(a, b);
+    }
+  }
+  saveMessages();
+
+  // Keep the most useful bits across the merged entries: newest lastSeen wins,
+  // and a publicKey only if keepId doesn't already have one.
+  const keepEntry = devices.get(keepId);
+  for (const id of mergeSet) {
+    const entry = devices.get(id);
+    if (!entry) continue;
+    if (entry.lastSeen > keepEntry.lastSeen) keepEntry.lastSeen = entry.lastSeen;
+    if (!keepEntry.publicKey && entry.publicKey) keepEntry.publicKey = entry.publicKey;
+    for (const socketId of entry.sockets) keepEntry.sockets.add(socketId); // shouldn't normally happen, but stay safe
+    if (entry.leaveTimer) clearTimeout(entry.leaveTimer);
+    devices.delete(id);
+  }
+  saveDevices();
+  broadcastDeviceList();
+
+  res.json({ ok: true, keepId, merged: [...mergeSet] });
+});
+
 app.get('/api/files', (req, res) => {
   const files = fs.readdirSync(UPLOAD_DIR)
     .filter((name) => !name.startsWith('.tmp-'))

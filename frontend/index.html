@@ -89,6 +89,17 @@
           </div>
           <p class="settings-hint">Only change this if the backend runs on a different device or port.</p>
         </div>
+
+        <div class="settings-section">
+          <label class="settings-label">Devices</label>
+          <p class="settings-hint">
+            Select two or more rows below that are really the same device (e.g. duplicates left
+            over from before this device kept a stable identity across restarts) and merge them
+            into one — their chat history will be combined.
+          </p>
+          <ul id="deviceMergeList" class="device-merge-list"></ul>
+          <button type="button" id="mergeDevicesBtn" class="merge-devices-btn" disabled>Merge selected</button>
+        </div>
       </div>
 
       <nav class="tabs">
