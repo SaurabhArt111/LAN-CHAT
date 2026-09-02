@@ -272,6 +272,37 @@ body {
   background: var(--card-2);
 }
 
+.download-choice-modal {
+  width: min(380px, 90vw);
+}
+
+.download-choice-modal .modal-sub {
+  margin-bottom: 16px;
+}
+
+.download-choice-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.download-choice-actions .dialog-btn.secondary {
+  margin-top: 0;
+}
+
+.download-choice-cancel {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  padding: 7px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.download-choice-cancel:hover {
+  color: var(--text);
+}
+
 /* ===================== Layout ===================== */
 .app {
   max-width: 640px;
@@ -1692,6 +1723,7 @@ header h1 {
   align-items: center;
   justify-content: center;
   padding: 0 16px;
+  overflow: hidden;
   cursor: zoom-out;
 }
 
@@ -1702,6 +1734,18 @@ header h1 {
   border-radius: 8px;
   object-fit: contain;
   cursor: default;
+}
+
+.viewer-body img.viewer-zoomable {
+  touch-action: none;
+  transform-origin: center center;
+  transition: transform 0.12s ease-out;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.viewer-body img.viewer-zoomable:active {
+  transition: none;
 }
 
 .viewer-body audio {

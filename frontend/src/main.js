@@ -1,4 +1,5 @@
 import { io } from 'socket.io-client';
+import { zipSync } from 'fflate';
 import {
   generateDeviceKeypair,
   importPrivateKey,
@@ -1364,12 +1365,81 @@ function downloadMessage(msg) {
   a.remove();
 }
 
-function downloadMessages(ids) {
+function triggerDownload(url, filename) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+async function downloadMessagesAsZip(candidates) {
+  try {
+    const entries = await Promise.all(candidates.map(async (msg) => {
+      const response = await fetch(`${backendBase}/api/download/${encodeURIComponent(msg.name)}?download=1`);
+      if (!response.ok) throw new Error(`Could not download ${msg.name}`);
+      return [msg.name, new Uint8Array(await response.arrayBuffer())];
+    }));
+    const archive = zipSync(Object.fromEntries(entries), { level: 6 });
+    const url = URL.createObjectURL(new Blob([archive], { type: 'application/zip' }));
+    triggerDownload(url, `LAN Chat files (${new Date().toISOString().slice(0, 10)}).zip`);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast(`${candidates.length} files downloaded as a ZIP.`, 'info');
+  } catch (error) {
+    showToast(error.message || 'Could not create the ZIP file.', 'error');
+  }
+}
+
+function downloadMessagesOneByOne(candidates) {
+  candidates.forEach((msg, index) => {
+    setTimeout(() => downloadMessage(msg), index * 400);
+  });
+  showToast(`Starting ${candidates.length} individual downloads.`, 'info');
+}
+
+function chooseDownloadMode(count) {
+  const modal = document.getElementById('downloadChoiceModal');
+  const text = document.getElementById('downloadChoiceText');
+  const zipBtn = document.getElementById('downloadZipBtn');
+  const individualBtn = document.getElementById('downloadIndividualBtn');
+  const cancelBtn = document.getElementById('downloadChoiceCancelBtn');
+  text.textContent = `${count} files are selected. Choose how you want to download them.`;
+  modal.classList.remove('hidden');
+
+  return new Promise((resolve) => {
+    const close = (choice) => {
+      modal.classList.add('hidden');
+      zipBtn.removeEventListener('click', chooseZip);
+      individualBtn.removeEventListener('click', chooseIndividual);
+      cancelBtn.removeEventListener('click', chooseCancel);
+      resolve(choice);
+    };
+    const chooseZip = () => close('zip');
+    const chooseIndividual = () => close('individual');
+    const chooseCancel = () => close(null);
+    zipBtn.addEventListener('click', chooseZip);
+    individualBtn.addEventListener('click', chooseIndividual);
+    cancelBtn.addEventListener('click', chooseCancel);
+  });
+}
+
+async function downloadMessages(ids) {
   const selected = [...ids];
   if (!shouldAllowDownloadSelection(selected)) return;
   const candidates = getDownloadCandidates(selected);
   if (candidates.length === 0) return;
-  candidates.forEach((msg) => downloadMessage(msg));
+  if (candidates.length === 1) {
+    downloadMessage(candidates[0]);
+    exitSelectionMode();
+    return;
+  }
+
+  const mode = await chooseDownloadMode(candidates.length);
+  if (mode === null) return;
+  if (mode === 'zip') await downloadMessagesAsZip(candidates);
+  else downloadMessagesOneByOne(candidates);
   exitSelectionMode();
 }
 
@@ -1494,6 +1564,26 @@ const viewerName = document.getElementById('viewerName');
 const viewerBody = document.getElementById('viewerBody');
 const viewerMeta = document.getElementById('viewerMeta');
 const viewerDownloadBtn = document.getElementById('viewerDownloadBtn');
+let viewerZoom = 1;
+let viewerPanX = 0;
+let viewerPanY = 0;
+let viewerDragging = false;
+let viewerDragStartX = 0;
+let viewerDragStartY = 0;
+
+function resetViewerImageTransform() {
+  viewerZoom = 1;
+  viewerPanX = 0;
+  viewerPanY = 0;
+  viewerDragging = false;
+}
+
+function applyViewerImageTransform(image) {
+  image.style.transform = `translate(${viewerPanX}px, ${viewerPanY}px) scale(${viewerZoom})`;
+  image.draggable = viewerZoom <= 1;
+  image.style.webkitUserDrag = viewerZoom <= 1 ? 'auto' : 'none';
+  image.style.cursor = viewerZoom > 1 ? (viewerDragging ? 'grabbing' : 'grab') : 'zoom-in';
+}
 
 function openViewer(msg) {
   if (msg.deleted) return;
@@ -1503,11 +1593,18 @@ function openViewer(msg) {
   viewerDownloadBtn.href = `${url}?download=1`;
   viewerDownloadBtn.setAttribute('download', msg.name);
   viewerBody.innerHTML = '';
+  resetViewerImageTransform();
 
   if (IMAGE_EXT.test(msg.name)) {
     const img = document.createElement('img');
+    img.className = 'viewer-zoomable';
+    img.draggable = false;
     img.src = url;
     img.alt = msg.name;
+    img.addEventListener('dragstart', (e) => {
+      if (viewerZoom > 1) e.preventDefault();
+    });
+    applyViewerImageTransform(img);
     viewerBody.appendChild(img);
   } else if (VIDEO_EXT.test(msg.name)) {
     const video = document.createElement('video');
@@ -1538,6 +1635,41 @@ document.getElementById('viewerCloseBtn').addEventListener('click', closeViewer)
 // media itself, and not the header/footer controls) closes the viewer.
 viewerBody.addEventListener('click', (e) => {
   if (e.target === viewerBody) closeViewer();
+});
+viewerBody.addEventListener('wheel', (e) => {
+  const image = e.target.closest('.viewer-zoomable');
+  if (!image) return;
+  e.preventDefault();
+  const nextZoom = Math.min(5, Math.max(1, viewerZoom * (e.deltaY < 0 ? 1.15 : 0.87)));
+  if (nextZoom === 1) {
+    viewerPanX = 0;
+    viewerPanY = 0;
+  }
+  viewerZoom = nextZoom;
+  applyViewerImageTransform(image);
+}, { passive: false });
+viewerBody.addEventListener('pointerdown', (e) => {
+  const image = e.target.closest('.viewer-zoomable');
+  if (!image || viewerZoom <= 1) return;
+  viewerDragging = true;
+  viewerDragStartX = e.clientX - viewerPanX;
+  viewerDragStartY = e.clientY - viewerPanY;
+  image.setPointerCapture(e.pointerId);
+  applyViewerImageTransform(image);
+});
+viewerBody.addEventListener('pointermove', (e) => {
+  const image = e.target.closest('.viewer-zoomable');
+  if (!image || !viewerDragging) return;
+  viewerPanX = e.clientX - viewerDragStartX;
+  viewerPanY = e.clientY - viewerDragStartY;
+  applyViewerImageTransform(image);
+});
+viewerBody.addEventListener('pointerup', (e) => {
+  const image = e.target.closest('.viewer-zoomable');
+  if (!image) return;
+  viewerDragging = false;
+  image.releasePointerCapture?.(e.pointerId);
+  applyViewerImageTransform(image);
 });
 viewerModal.addEventListener('click', (e) => {
   if (e.target === viewerModal) closeViewer();
