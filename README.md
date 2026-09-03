@@ -29,6 +29,20 @@ device runs the backend + frontend, everyone else just opens a browser.
 - **Fast large-file transfer** — files are split into 8MB chunks and uploaded several at once
   in parallel, which both speeds up transfer over LAN and makes multi-gigabyte files (tested
   well past 2-3GB) more resilient to a single flaky chunk.
+- **Uploads & downloads run in the background** — sending a file closes the picker immediately
+  and keeps uploading while you keep chatting, switch conversations, or switch tabs; a small
+  "sending…" bubble tracks its progress in the chat until the real message replaces it.
+  Downloads are handled by the browser's own (already-backgrounded, disk-streamed) download
+  manager. A **Transfers** button appears in the header whenever something's moving, showing
+  every active/recent upload and download in one place regardless of which chat or tab is open.
+- **Reopens where you left off** — reloading the page (or the phone waking back up) drops you
+  back into whichever chat — Group or a specific DM — you had open, instead of the chat list.
+- **Search & pin chats** — a search box above the chat list filters by name or last message as
+  you type; right-click (or long-press) any chat row for a Pin option that keeps it at the top
+  of the list.
+- **Loading states throughout** — a brief splash while the app first connects, skeleton
+  placeholders for the chat list and Files tab while their data loads, and a spinner the first
+  time a conversation's history is being fetched.
 - **Notifications**: enable/disable in Settings, plus a one-time friendly prompt the first
   time you open the app (if you haven't already been asked) offering to turn them on. Uses
   the browser's Notification API (no external push service required, since this app is meant

@@ -10,6 +10,20 @@
 </head>
 
 <body>
+  <!-- Boot splash: covers the app until we know whether to show the name
+       prompt or jump straight into a reconnected session. Also doubles as the
+       "reconnecting to a device that's gone quiet" screen. -->
+  <div id="bootSplash" class="boot-splash">
+    <div class="boot-splash-inner">
+      <div class="boot-logo-ring">
+        <span class="boot-logo">📡</span>
+      </div>
+      <div class="boot-title">LAN Chat</div>
+      <div class="boot-spinner"></div>
+      <div class="boot-status" id="bootStatus">Connecting…</div>
+    </div>
+  </div>
+
   <!-- Username modal shown once per browser -->
   <div id="nameModal" class="modal-overlay">
     <div class="modal">
@@ -35,10 +49,26 @@
         </div>
         <div class="header-actions">
           <span id="myName" class="my-name"></span>
+          <button id="transfersBtn" class="icon-btn ghost hidden" title="Transfers">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+            <span id="transfersBadge" class="transfers-badge hidden">0</span>
+          </button>
           <button id="settingsBtn" class="icon-btn ghost" title="Settings">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
         </div>
+      </div>
+
+      <!-- Transfers panel: every active/recent upload & download, regardless of
+           which chat or tab is open. Uploads/downloads never block the UI —
+           this is just visibility into what's happening in the background. -->
+      <div id="transfersPanel" class="transfers-panel hidden">
+        <div class="transfers-panel-header">
+          <span>Transfers</span>
+          <button type="button" id="transfersClearBtn" class="transfers-clear-btn">Clear finished</button>
+        </div>
+        <ul id="transfersList" class="transfers-list"></ul>
+        <p id="transfersEmpty" class="transfers-empty">No active transfers.</p>
       </div>
 
       <!-- Settings panel: profile, theme, notifications, backend address -->
@@ -113,7 +143,16 @@
 
       <!-- ---- Chat list (Group + one row per device, including offline ones) ---- -->
       <div id="chatListView" class="chat-list-view">
-        <ul id="chatList" class="chat-list"></ul>
+        <div class="chat-list-search-wrap">
+          <svg class="chat-list-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input id="chatSearchInput" class="chat-list-search" type="text" placeholder="Search chats" autocomplete="off" />
+        </div>
+        <ul id="chatList" class="chat-list">
+          <li class="chat-list-item skeleton"><span class="skeleton-block avatar-skeleton"></span><div class="chat-list-info"><span class="skeleton-block" style="width:40%;height:13px;"></span><span class="skeleton-block" style="width:65%;height:11px;margin-top:8px;"></span></div></li>
+          <li class="chat-list-item skeleton"><span class="skeleton-block avatar-skeleton"></span><div class="chat-list-info"><span class="skeleton-block" style="width:55%;height:13px;"></span><span class="skeleton-block" style="width:35%;height:11px;margin-top:8px;"></span></div></li>
+          <li class="chat-list-item skeleton"><span class="skeleton-block avatar-skeleton"></span><div class="chat-list-info"><span class="skeleton-block" style="width:30%;height:13px;"></span><span class="skeleton-block" style="width:50%;height:11px;margin-top:8px;"></span></div></li>
+          <li class="chat-list-item skeleton"><span class="skeleton-block avatar-skeleton"></span><div class="chat-list-info"><span class="skeleton-block" style="width:48%;height:13px;"></span><span class="skeleton-block" style="width:40%;height:11px;margin-top:8px;"></span></div></li>
+        </ul>
       </div>
 
       <!-- ---- Conversation view (shared by Group + any 1:1 DM) ---- -->
@@ -144,6 +183,12 @@
 
         <div id="chatDropOverlay" class="chat-drop-overlay hidden">
           <div>📎 Drop to share in chat</div>
+        </div>
+
+        <!-- Loading state while a conversation's history is being fetched the
+             first time (group's initial history, or a DM's first open) ---- -->
+        <div id="conversationLoading" class="conversation-loading hidden">
+          <div class="boot-spinner small"></div>
         </div>
 
         <!-- Multi-select action bar -->
@@ -228,6 +273,11 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
           </button>
         </div>
+        <ul id="fileListSkeleton" class="file-list skeleton-list hidden">
+          <li class="file-item skeleton"><span class="skeleton-block file-icon"></span><div class="file-info"><span class="skeleton-block" style="width:60%;height:13px;"></span><span class="skeleton-block" style="width:30%;height:11px;margin-top:6px;"></span></div></li>
+          <li class="file-item skeleton"><span class="skeleton-block file-icon"></span><div class="file-info"><span class="skeleton-block" style="width:45%;height:13px;"></span><span class="skeleton-block" style="width:25%;height:11px;margin-top:6px;"></span></div></li>
+          <li class="file-item skeleton"><span class="skeleton-block file-icon"></span><div class="file-info"><span class="skeleton-block" style="width:70%;height:13px;"></span><span class="skeleton-block" style="width:35%;height:11px;margin-top:6px;"></span></div></li>
+        </ul>
         <ul id="fileList" class="file-list"></ul>
         <p id="emptyState" class="empty-state hidden">No files yet — upload something above.</p>
       </section>
@@ -301,6 +351,14 @@
     <button type="button" data-action="select">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
       Select
+    </button>
+  </div>
+
+  <!-- ===================== Chat list row context menu (Pin / Unpin) ===================== -->
+  <div id="chatContextMenu" class="context-menu hidden">
+    <button type="button" id="chatCtxPin">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79L15 12V7a1 1 0 0 1 1-1 2 2 0 0 0 2-2V3H6v1a2 2 0 0 0 2 2 1 1 0 0 1 1 1v5l-2.89 1.45A2 2 0 0 0 5 15.24z"/></svg>
+      <span id="chatCtxPinLabel">Pin chat</span>
     </button>
   </div>
 

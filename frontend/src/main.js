@@ -10,6 +10,31 @@ import {
 } from './crypto.js';
 
 // ============================================================
+// Boot splash: covers the app until we know whether to show the name
+// prompt or jump straight into a reconnected session. Hidden as soon as
+// there's something meaningful to look at (name prompt, or first data from
+// the backend) — never blocks longer than a few seconds even if the
+// backend is unreachable, since the header's own connection indicator
+// takes over from there.
+// ============================================================
+const bootSplash = document.getElementById('bootSplash');
+const bootStatus = document.getElementById('bootStatus');
+let bootSplashHidden = false;
+function hideBootSplash() {
+  if (bootSplashHidden) return;
+  bootSplashHidden = true;
+  bootSplash.classList.add('hidden');
+  setTimeout(() => bootSplash.remove(), 400);
+}
+function setBootStatus(text) {
+  if (bootStatus) bootStatus.textContent = text;
+}
+// Safety net: don't leave the person staring at the splash forever if the
+// backend never responds — the connection banner in the header explains
+// what's going on from here.
+setTimeout(hideBootSplash, 6000);
+
+// ============================================================
 // Toasts
 // ============================================================
 const toastHost = document.getElementById('toastHost');
@@ -223,6 +248,7 @@ const nameEditInput = document.getElementById('nameEditInput');
 settingsBtn.addEventListener('click', () => {
   const opening = settingsPanel.classList.contains('hidden');
   settingsPanel.classList.toggle('hidden');
+  transfersPanel.classList.add('hidden');
   if (opening) {
     nameEditInput.value = username;
     renderDeviceMergeList();
@@ -421,6 +447,7 @@ let username = idStore.get('lan-share-username') || '';
 function showNameModal() {
   nameModal.style.display = 'flex';
   nameInput.focus();
+  hideBootSplash();
 }
 function hideNameModal() {
   nameModal.style.display = 'none';
@@ -476,6 +503,28 @@ function dmConversationId(a, b) {
   return 'dm:' + [a, b].sort().join('|');
 }
 
+// ---- Persist the currently open chat across page refreshes / reconnects,
+// so reloading the tab (or the phone waking up) drops you back where you
+// were instead of the chat list. ----
+const LAST_CONVERSATION_KEY = 'lan-share-last-conversation';
+function saveActiveConversation(conv) {
+  try {
+    if (!conv) {
+      localStorage.removeItem(LAST_CONVERSATION_KEY);
+      return;
+    }
+    const data = conv.type === 'group' ? { type: 'group' } : { type: 'dm', peerDeviceId: conv.peerDeviceId };
+    localStorage.setItem(LAST_CONVERSATION_KEY, JSON.stringify(data));
+  } catch {}
+}
+function loadSavedConversation() {
+  try {
+    return JSON.parse(localStorage.getItem(LAST_CONVERSATION_KEY));
+  } catch {
+    return null;
+  }
+}
+
 let socket = null;
 let hasOfferedNotifications = false;
 let deviceList = []; // [{deviceId, name, online, lastSeen}]
@@ -492,10 +541,12 @@ function ensureConversationCache(conversationId) {
 function connectSocket() {
   if (socket) socket.disconnect();
   setConnStatus('connecting');
+  setBootStatus('Connecting to backend…');
   socket = io(backendBase, { transports: ['websocket', 'polling'] });
 
   socket.on('connect', async () => {
     setConnStatus('connected');
+    setBootStatus('Signing in…');
     await myPrivateKeyPromise; // make sure our keypair exists before announcing it
     socket.emit('join', { username, deviceId, publicKey: myPublicKeyBase64 });
     if (!hasOfferedNotifications) {
@@ -505,13 +556,20 @@ function connectSocket() {
   });
 
   socket.on('disconnect', () => setConnStatus('disconnected'));
-  socket.on('connect_error', () => setConnStatus('disconnected'));
+  socket.on('connect_error', () => {
+    setConnStatus('disconnected');
+    setBootStatus("Can't reach the backend — check Settings.");
+  });
 
   socket.on('history', (history) => {
     messagesByConversation.set(GROUP_ID, history);
-    if (activeConversation?.type === 'group') renderActiveConversation(true);
+    if (activeConversation?.type === 'group') {
+      conversationLoadingEl.classList.add('hidden');
+      renderActiveConversation(true);
+    }
   });
 
+  let didRestoreConversation = false;
   socket.on('devices', (list) => {
     deviceList = list.filter((d) => d.deviceId !== deviceId);
 
@@ -534,6 +592,24 @@ function connectSocket() {
       updateConversationSubtitle();
       updateEncryptionUI();
     }
+
+    // Reopen whatever chat was on screen before a refresh, once we have a
+    // roster to resolve a DM peer's name against. Only attempted once per
+    // page load, and only if nothing else has opened a conversation yet.
+    if (!didRestoreConversation) {
+      didRestoreConversation = true;
+      if (!activeConversation) {
+        const saved = loadSavedConversation();
+        if (saved?.type === 'group') {
+          openConversation({ type: 'group' });
+        } else if (saved?.type === 'dm') {
+          const dev = deviceList.find((d) => d.deviceId === saved.peerDeviceId);
+          if (dev) openConversation({ type: 'dm', peerDeviceId: dev.deviceId, peerName: dev.name });
+        }
+      }
+    }
+
+    hideBootSplash();
   });
 
   socket.on('message', async (msg) => {
@@ -567,6 +643,7 @@ function connectSocket() {
       if (wasNearBottom || mine) {
         scrollToBottom(true);
       } else {
+        jumpToBottomBtn.textContent = '↓ New messages';
         jumpToBottomBtn.classList.remove('hidden');
       }
     } else if (msg.type !== 'system') {
@@ -607,6 +684,7 @@ function connectSocket() {
     merged.sort((a, b) => a.ts - b.ts);
     messagesByConversation.set(cid, merged);
     if (activeConversation?.type === 'dm' && activeConversation.peerDeviceId === peerDeviceId) {
+      conversationLoadingEl.classList.add('hidden');
       renderActiveConversation(true);
     }
     renderChatList();
@@ -779,19 +857,67 @@ mergeDevicesBtn?.addEventListener('click', async () => {
   }
 });
 
+// ============================================================
+// Chat list search — filters by name and last-message preview, live as you type.
+// ============================================================
+const chatSearchInput = document.getElementById('chatSearchInput');
+let chatSearchQuery = '';
+chatSearchInput.addEventListener('input', () => {
+  chatSearchQuery = chatSearchInput.value.trim().toLowerCase();
+  renderChatList();
+});
+
+// ============================================================
+// Pinned chats — kept at the top of the list, persisted per browser.
+// ============================================================
+const PINNED_CHATS_KEY = 'lan-share-pinned-chats';
+let pinnedChats = new Set();
+try { pinnedChats = new Set(JSON.parse(localStorage.getItem(PINNED_CHATS_KEY) || '[]')); } catch {}
+function savePinnedChats() {
+  try { localStorage.setItem(PINNED_CHATS_KEY, JSON.stringify([...pinnedChats])); } catch {}
+}
+function togglePinChat(cid) {
+  if (pinnedChats.has(cid)) pinnedChats.delete(cid);
+  else pinnedChats.add(cid);
+  savePinnedChats();
+  renderChatList();
+}
+
 function renderChatList() {
   chatListEl.innerHTML = '';
   updateTabBadge();
 
-  const rows = [{ kind: 'group' }, ...deviceList.map((d) => ({ kind: 'dm', device: d }))];
+  const rows = [{ kind: 'group' }, ...deviceList.map((d) => ({ kind: 'dm', device: d }))]
+    .map((row) => {
+      const cid = row.kind === 'group' ? GROUP_ID : dmConversationId(deviceId, row.device.deviceId);
+      return { ...row, cid, preview: lastMessagePreview(cid), pinned: pinnedChats.has(cid) };
+    })
+    .filter((row) => {
+      if (!chatSearchQuery) return true;
+      const title = row.kind === 'group' ? 'group' : row.device.name.toLowerCase();
+      const previewText = row.preview ? row.preview.text.toLowerCase() : '';
+      return title.includes(chatSearchQuery) || previewText.includes(chatSearchQuery);
+    })
+    .sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      return (b.preview?.ts || 0) - (a.preview?.ts || 0);
+    });
+
+  if (rows.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'chat-list-empty-search';
+    empty.textContent = `No chats match "${chatSearchInput.value.trim()}"`;
+    chatListEl.appendChild(empty);
+    return;
+  }
 
   for (const row of rows) {
-    const cid = row.kind === 'group' ? GROUP_ID : dmConversationId(deviceId, row.device.deviceId);
-    const preview = lastMessagePreview(cid);
+    const cid = row.cid;
+    const preview = row.preview;
     const unread = unreadConversations.has(cid);
 
     const li = document.createElement('li');
-    li.className = `chat-list-item ${unread ? 'unread' : ''}`;
+    li.className = `chat-list-item ${unread ? 'unread' : ''} ${row.pinned ? 'pinned' : ''}`;
 
     const avatar = document.createElement('div');
     avatar.className = 'avatar chat-list-avatar';
@@ -807,6 +933,13 @@ function renderChatList() {
     info.className = 'chat-list-info';
     const titleRow = document.createElement('div');
     titleRow.className = 'chat-list-title-row';
+    if (row.pinned) {
+      const pinIcon = document.createElement('span');
+      pinIcon.className = 'chat-list-pin-icon';
+      pinIcon.textContent = '📌';
+      titleRow.appendChild(pinIcon);
+    }
+
     const title = document.createElement('span');
     title.className = 'chat-list-title';
     title.textContent = row.kind === 'group' ? 'Group' : row.device.name;
@@ -845,9 +978,50 @@ function renderChatList() {
       else openConversation({ type: 'dm', peerDeviceId: row.device.deviceId, peerName: row.device.name });
     });
 
+    li.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      openChatContextMenu(e.clientX, e.clientY, cid, row.pinned);
+    });
+    let chatLongPressTimer;
+    li.addEventListener('touchstart', (e) => {
+      const touch = e.touches[0];
+      chatLongPressTimer = setTimeout(() => openChatContextMenu(touch.clientX, touch.clientY, cid, row.pinned), 500);
+    }, { passive: true });
+    li.addEventListener('touchend', () => clearTimeout(chatLongPressTimer));
+    li.addEventListener('touchmove', () => clearTimeout(chatLongPressTimer));
+
     chatListEl.appendChild(li);
   }
 }
+
+// ---- Chat list row context menu: currently just Pin/Unpin, but built the
+// same way as the message context menu so more actions can slot in later. ----
+const chatContextMenu = document.getElementById('chatContextMenu');
+const chatCtxPin = document.getElementById('chatCtxPin');
+const chatCtxPinLabel = document.getElementById('chatCtxPinLabel');
+let chatContextMenuCid = null;
+
+function openChatContextMenu(x, y, cid, isPinned) {
+  chatContextMenuCid = cid;
+  chatCtxPinLabel.textContent = isPinned ? 'Unpin chat' : 'Pin chat';
+  chatContextMenu.classList.remove('hidden');
+  const rect = chatContextMenu.getBoundingClientRect();
+  const maxX = window.innerWidth - rect.width - 8;
+  const maxY = window.innerHeight - rect.height - 8;
+  chatContextMenu.style.left = Math.min(x, maxX) + 'px';
+  chatContextMenu.style.top = Math.min(y, maxY) + 'px';
+}
+function closeChatContextMenu() {
+  chatContextMenu.classList.add('hidden');
+  chatContextMenuCid = null;
+}
+chatCtxPin.addEventListener('click', () => {
+  if (chatContextMenuCid) togglePinChat(chatContextMenuCid);
+  closeChatContextMenu();
+});
+document.addEventListener('click', (e) => {
+  if (!chatContextMenu.classList.contains('hidden') && !chatContextMenu.contains(e.target)) closeChatContextMenu();
+});
 
 function updateConversationSubtitle() {
   if (activeConversation?.type !== 'dm') return;
@@ -896,6 +1070,8 @@ document.getElementById('trustNewKeyBtn').addEventListener('click', () => {
   showToast('New key trusted for this device.', 'info');
 });
 
+const conversationLoadingEl = document.getElementById('conversationLoading');
+
 function openConversation(conv) {
   activeConversation = conv;
   const cid = conv.type === 'group' ? GROUP_ID : dmConversationId(deviceId, conv.peerDeviceId);
@@ -911,6 +1087,15 @@ function openConversation(conv) {
   chatListView.classList.add('hidden');
   conversationView.classList.remove('hidden');
   typingIndicator.classList.add('hidden');
+  saveActiveConversation(conv);
+
+  // Show a brief spinner instead of an empty message list while this
+  // conversation's history is still in flight (group's first load, or a
+  // DM opened for the first time this session).
+  const historyPending = conv.type === 'group'
+    ? !messagesByConversation.has(GROUP_ID)
+    : !dmHistoryFetched.has(conv.peerDeviceId);
+  conversationLoadingEl.classList.toggle('hidden', !historyPending);
 
   if (conv.type === 'dm' && !dmHistoryFetched.has(conv.peerDeviceId)) {
     dmHistoryFetched.add(conv.peerDeviceId);
@@ -927,6 +1112,7 @@ document.getElementById('backToListBtn').addEventListener('click', () => {
   exitSelectionMode();
   conversationView.classList.add('hidden');
   chatListView.classList.remove('hidden');
+  saveActiveConversation(null);
   renderChatList();
 });
 
@@ -948,7 +1134,12 @@ function scrollToBottom(instant = false) {
   jumpToBottomBtn.classList.add('hidden');
 }
 messageList.addEventListener('scroll', () => {
-  if (isNearBottom()) jumpToBottomBtn.classList.add('hidden');
+  if (isNearBottom()) {
+    jumpToBottomBtn.classList.add('hidden');
+  } else {
+    jumpToBottomBtn.textContent = '↓';
+    jumpToBottomBtn.classList.remove('hidden');
+  }
 });
 jumpToBottomBtn.addEventListener('click', () => scrollToBottom());
 
@@ -1000,7 +1191,65 @@ function renderActiveConversation(scrollInstant = false) {
   lastRenderedFrom = null;
   msgs.forEach(renderMessage);
   chatEmptyState.classList.toggle('hidden', msgs.length > 0);
+  reattachPendingUploadBubbles(cid);
   scrollToBottom(scrollInstant);
+}
+
+// ============================================================
+// In-chat "sending…" bubbles for files still uploading in the background.
+// These live outside messagesByConversation (they're not real messages yet)
+// so a full re-render just needs to re-append whichever ones still belong
+// to this conversation — see reattachPendingUploadBubbles below, called at
+// the end of renderActiveConversation.
+// ============================================================
+function pendingBubbleDomId(t) {
+  return `pending-upload-${t.id}`;
+}
+function appendPendingUploadBubble(t) {
+  if (currentConversationId() !== t.conversationId) return;
+  if (document.getElementById(pendingBubbleDomId(t))) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-row mine pending-upload';
+  wrap.id = pendingBubbleDomId(t);
+  wrap.innerHTML = `
+    <div class="bubble">
+      <div class="msg-file">
+        <span class="msg-file-icon">${fileIcon(t.name)}</span>
+        <span class="msg-file-meta">
+          <span class="msg-file-name">${escapeHtml(t.name)}</span>
+          <span class="msg-file-size pending-upload-status">Sending… ${t.progress}%</span>
+        </span>
+      </div>
+      <div class="transfer-progress-bar"><div class="transfer-progress-fill" data-role="fill" style="width:${t.progress}%"></div></div>
+    </div>`;
+  messageList.appendChild(wrap);
+  chatEmptyState.classList.add('hidden');
+  scrollToBottom(true);
+}
+function updatePendingUploadBubble(t) {
+  const el = document.getElementById(pendingBubbleDomId(t));
+  if (!el) return;
+  const fill = el.querySelector('[data-role="fill"]');
+  const status = el.querySelector('.pending-upload-status');
+  if (fill) fill.style.width = t.progress + '%';
+  if (status) status.textContent = `Sending… ${t.progress}%`;
+}
+function removePendingUploadBubble(t) {
+  document.getElementById(pendingBubbleDomId(t))?.remove();
+}
+function markPendingUploadBubbleFailed(t) {
+  const el = document.getElementById(pendingBubbleDomId(t));
+  if (!el) return;
+  el.classList.add('upload-failed');
+  const status = el.querySelector('.pending-upload-status');
+  if (status) status.textContent = 'Failed to send — tap to retry from Files tab';
+}
+function reattachPendingUploadBubbles(cid) {
+  for (const t of transfers.values()) {
+    if (t.kind === 'upload' && t.status === 'active' && t.conversationId === cid) {
+      appendPendingUploadBubble(t);
+    }
+  }
 }
 
 function renderMessage(msg) {
@@ -1116,6 +1365,7 @@ function renderMessage(msg) {
         img.alt = msg.name;
         img.className = 'msg-image';
         img.loading = 'lazy';
+        img.addEventListener('load', () => img.classList.add('loaded'));
         img.addEventListener('click', (e) => {
           e.stopPropagation();
           if (selectionMode) toggleSelect(msg.id);
@@ -1363,6 +1613,7 @@ function downloadMessage(msg) {
   document.body.appendChild(a);
   a.click();
   a.remove();
+  noteDownloadStarted(msg.name);
 }
 
 function triggerDownload(url, filename) {
@@ -1376,18 +1627,26 @@ function triggerDownload(url, filename) {
 }
 
 async function downloadMessagesAsZip(candidates) {
+  const zipName = `LAN Chat files (${new Date().toISOString().slice(0, 10)}).zip`;
+  const transferId = createTransfer('download', zipName, 0);
   try {
+    let done = 0;
     const entries = await Promise.all(candidates.map(async (msg) => {
       const response = await fetch(`${backendBase}/api/download/${encodeURIComponent(msg.name)}?download=1`);
       if (!response.ok) throw new Error(`Could not download ${msg.name}`);
-      return [msg.name, new Uint8Array(await response.arrayBuffer())];
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      done++;
+      updateTransfer(transferId, { progress: Math.round((done / candidates.length) * 100) });
+      return [msg.name, bytes];
     }));
     const archive = zipSync(Object.fromEntries(entries), { level: 6 });
     const url = URL.createObjectURL(new Blob([archive], { type: 'application/zip' }));
-    triggerDownload(url, `LAN Chat files (${new Date().toISOString().slice(0, 10)}).zip`);
+    triggerDownload(url, zipName);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    finishTransfer(transferId, 'done');
     showToast(`${candidates.length} files downloaded as a ZIP.`, 'info');
   } catch (error) {
+    finishTransfer(transferId, 'error');
     showToast(error.message || 'Could not create the ZIP file.', 'error');
   }
 }
@@ -1396,7 +1655,6 @@ function downloadMessagesOneByOne(candidates) {
   candidates.forEach((msg, index) => {
     setTimeout(() => downloadMessage(msg), index * 400);
   });
-  showToast(`Starting ${candidates.length} individual downloads.`, 'info');
 }
 
 function chooseDownloadMode(count) {
@@ -1592,6 +1850,7 @@ function openViewer(msg) {
   viewerMeta.textContent = formatBytes(msg.size || 0);
   viewerDownloadBtn.href = `${url}?download=1`;
   viewerDownloadBtn.setAttribute('download', msg.name);
+  viewerDownloadBtn.onclick = () => noteDownloadStarted(msg.name);
   viewerBody.innerHTML = '';
   resetViewerImageTransform();
 
@@ -1729,6 +1988,116 @@ chatInput.addEventListener('input', () => {
 // at once, which is both faster over LAN and lets big (multi-GB) transfers
 // recover from a single flaky chunk instead of failing the whole upload.
 // ============================================================
+// ============================================================
+// Background transfers: every upload/download runs independently of
+// whichever chat or tab is currently on screen, and a small tray in the
+// header shows what's in flight so nothing has to block the rest of the
+// app. Uploads report real byte-level progress (from the chunk XHRs
+// below); downloads are handed off to the browser's native download
+// mechanism, which is already non-blocking and disk-streamed — we just
+// surface a "started" entry here for visibility/consistency rather than
+// re-buffering large files into JS memory to fake a progress bar.
+// ============================================================
+const transfers = new Map(); // id -> { id, kind, name, size, progress, status, conversationId }
+let transferSeq = 0;
+
+const transfersBtn = document.getElementById('transfersBtn');
+const transfersBadge = document.getElementById('transfersBadge');
+const transfersPanel = document.getElementById('transfersPanel');
+const transfersList = document.getElementById('transfersList');
+const transfersEmpty = document.getElementById('transfersEmpty');
+const transfersClearBtn = document.getElementById('transfersClearBtn');
+
+function createTransfer(kind, name, size, conversationId = null) {
+  const id = 't' + (++transferSeq);
+  transfers.set(id, { id, kind, name, size, progress: 0, status: 'active', conversationId });
+  renderTransfers();
+  return id;
+}
+function updateTransfer(id, patch) {
+  const t = transfers.get(id);
+  if (!t) return;
+  Object.assign(t, patch);
+  renderTransfers();
+  if (t.kind === 'upload') updatePendingUploadBubble(t);
+}
+function finishTransfer(id, status) {
+  const t = transfers.get(id);
+  if (!t) return;
+  t.status = status;
+  if (status === 'done') t.progress = 100;
+  renderTransfers();
+  if (t.kind === 'upload') {
+    if (status === 'done') removePendingUploadBubble(t);
+    else markPendingUploadBubbleFailed(t);
+  }
+  setTimeout(() => {
+    transfers.delete(id);
+    renderTransfers();
+  }, status === 'error' ? 5000 : 1800);
+}
+
+function renderTransfers() {
+  const activeCount = [...transfers.values()].filter((t) => t.status === 'active').length;
+  transfersBtn.classList.toggle('hidden', transfers.size === 0);
+  transfersBadge.classList.toggle('hidden', activeCount === 0);
+  transfersBadge.textContent = activeCount > 99 ? '99+' : String(activeCount);
+
+  transfersList.innerHTML = '';
+  const items = [...transfers.values()].reverse();
+  transfersEmpty.classList.toggle('hidden', items.length > 0);
+  for (const t of items) {
+    const li = document.createElement('li');
+    li.className = `transfer-item transfer-${t.status}`;
+    const icon = t.kind === 'upload' ? '⬆️' : '⬇️';
+    const statusLabel = t.status === 'done' ? 'Done' : t.status === 'error' ? 'Failed' : `${t.progress}%`;
+    const info = document.createElement('div');
+    info.className = 'transfer-info';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'transfer-name';
+    nameEl.textContent = t.name;
+    const bar = document.createElement('div');
+    bar.className = 'transfer-progress-bar';
+    const fill = document.createElement('div');
+    fill.className = 'transfer-progress-fill';
+    fill.style.width = t.progress + '%';
+    bar.appendChild(fill);
+    info.append(nameEl, bar);
+
+    const iconEl = document.createElement('span');
+    iconEl.className = 'transfer-icon';
+    iconEl.textContent = icon;
+    const statusEl = document.createElement('span');
+    statusEl.className = 'transfer-status';
+    statusEl.textContent = statusLabel;
+
+    li.append(iconEl, info, statusEl);
+    transfersList.appendChild(li);
+  }
+}
+
+transfersBtn.addEventListener('click', () => {
+  transfersPanel.classList.toggle('hidden');
+  settingsPanel.classList.add('hidden');
+});
+transfersClearBtn.addEventListener('click', () => {
+  for (const [id, t] of transfers) {
+    if (t.status !== 'active') transfers.delete(id);
+  }
+  renderTransfers();
+});
+
+// A download's progress can't be tracked without buffering the whole file
+// into JS memory (defeating the point of the backend's disk-streamed,
+// range-friendly downloads — see README), so this just logs a "started"
+// entry that auto-resolves. The actual transfer proceeds entirely in the
+// browser's own download manager, in the background, same as any other
+// site.
+function noteDownloadStarted(filename) {
+  const id = createTransfer('download', filename, 0);
+  setTimeout(() => finishTransfer(id, 'done'), 900);
+}
+
 const CHUNK_SIZE = 8 * 1024 * 1024; // 8MB
 const CHUNK_CONCURRENCY = 4;
 const CHUNK_MAX_RETRIES = 3;
@@ -1899,40 +2268,47 @@ attachCaptionInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') attachSendBtn.click();
 });
 
-attachSendBtn.addEventListener('click', async () => {
+// Sending is fire-and-forget from the UI's point of view: the modal closes
+// immediately and the upload(s) continue in the background via the
+// transfer manager, so you can keep chatting (in this conversation or any
+// other) or switch to the Files tab while a big file is still going up.
+attachSendBtn.addEventListener('click', () => {
   if (attachQueue.length === 0 || !activeConversation) return;
   const caption = attachCaptionInput.value.trim() || null;
   const replyTo = replyContext?.id || null;
   const files = [...attachQueue];
-  attachSendBtn.disabled = true;
-  attachSendProgressWrap.classList.remove('hidden');
+  const conv = activeConversation;
+  const cid = conv.type === 'group' ? GROUP_ID : dmConversationId(deviceId, conv.peerDeviceId);
 
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
+  cancelReply();
+  closeAttachPreview();
+  sendFilesInBackground(conv, cid, files, caption, replyTo);
+});
+
+async function sendFilesInBackground(conv, cid, files, caption, replyTo) {
+  for (const file of files) {
+    const transferId = createTransfer('upload', file.name, file.size, cid);
+    appendPendingUploadBubble(transfers.get(transferId));
+
     await new Promise((resolve) => {
       uploadFileChunked(file, {
-        onProgress: (pct) => {
-          const overall = Math.round(((i + pct / 100) / files.length) * 100);
-          attachSendProgressFill.style.width = overall + '%';
-        },
+        onProgress: (pct) => updateTransfer(transferId, { progress: pct }),
         onComplete: (res) => {
           const payload = { name: res.filename, size: res.size, caption, replyTo };
-          if (activeConversation.type === 'group') socket.emit('file-message', payload);
-          else socket.emit('dm-file-message', { toDeviceId: activeConversation.peerDeviceId, ...payload });
+          if (conv.type === 'group') socket.emit('file-message', payload);
+          else socket.emit('dm-file-message', { toDeviceId: conv.peerDeviceId, ...payload });
+          finishTransfer(transferId, 'done');
           resolve();
         },
         onError: (err) => {
-          showToast(`Upload failed: ${err.message}`, 'error');
+          showToast(`Couldn't send ${file.name}: ${err.message}`, 'error');
+          finishTransfer(transferId, 'error');
           resolve();
         },
       });
     });
   }
-
-  attachSendBtn.disabled = false;
-  cancelReply();
-  closeAttachPreview();
-});
+}
 
 attachBtn.addEventListener('click', () => chatFileInput.click());
 chatFileInput.addEventListener('change', (e) => {
@@ -2017,14 +2393,20 @@ function uploadFile(file) {
   progressFill.style.width = '0%';
   progressPct.textContent = '0%';
 
+  // Also tracked in the global Transfers tray — this upload keeps going
+  // in the background even if you switch to the Chats tab mid-transfer.
+  const transferId = createTransfer('upload', file.name, file.size);
+
   uploadFileChunked(file, {
     onProgress: (pct) => {
       progressFill.style.width = pct + '%';
       progressPct.textContent = pct + '%';
+      updateTransfer(transferId, { progress: pct });
     },
     onComplete: (res) => {
       progressPct.textContent = 'Done ✓';
       setTimeout(() => progressWrap.classList.add('hidden'), 1200);
+      finishTransfer(transferId, 'done');
       loadFiles();
       // Uploading from the Files tab (not tied to a specific conversation) still announces
       // the file in the Group chat, same as before — DMs only get files sent from within them.
@@ -2032,21 +2414,34 @@ function uploadFile(file) {
     },
     onError: (err) => {
       progressWrap.classList.add('hidden');
+      finishTransfer(transferId, 'error');
       showToast(`Upload failed: ${err.message}`, 'error');
     },
   });
 }
 
 const fileListEl = document.getElementById('fileList');
+const fileListSkeletonEl = document.getElementById('fileListSkeleton');
 const emptyState = document.getElementById('emptyState');
 document.getElementById('refreshBtn').addEventListener('click', loadFiles);
 
+let filesLoadedOnce = false;
 async function loadFiles() {
+  if (!filesLoadedOnce) {
+    fileListEl.classList.add('hidden');
+    emptyState.classList.add('hidden');
+    fileListSkeletonEl.classList.remove('hidden');
+  }
   try {
     const res = await fetch(`${backendBase}/api/files`);
     const files = await res.json();
+    filesLoadedOnce = true;
+    fileListSkeletonEl.classList.add('hidden');
+    fileListEl.classList.remove('hidden');
     renderFiles(files);
   } catch (err) {
+    fileListSkeletonEl.classList.add('hidden');
+    fileListEl.classList.remove('hidden');
     fileListEl.innerHTML = '';
     emptyState.textContent = `Can't reach backend at ${backendBase}`;
     emptyState.classList.remove('hidden');
@@ -2079,6 +2474,7 @@ function renderFiles(files) {
     downloadBtn.setAttribute('download', f.name);
     downloadBtn.textContent = 'Download';
     downloadBtn.className = 'btn download';
+    downloadBtn.addEventListener('click', () => noteDownloadStarted(f.name));
 
     const deleteBtn = document.createElement('button');
     deleteBtn.textContent = 'Delete';
