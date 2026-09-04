@@ -243,16 +243,26 @@ let backendBase = localStorage.getItem('lan-share-backend') || defaultBackend;
 backendInput.value = backendBase;
 
 const settingsBtn = document.getElementById('settingsBtn');
-const settingsPanel = document.getElementById('settingsPanel');
+const settingsView = document.getElementById('settingsView');
 const nameEditInput = document.getElementById('nameEditInput');
-settingsBtn.addEventListener('click', () => {
-  const opening = settingsPanel.classList.contains('hidden');
-  settingsPanel.classList.toggle('hidden');
+const settingsProfileAvatar = document.getElementById('settingsProfileAvatar');
+
+function openSettings() {
   transfersPanel.classList.add('hidden');
-  if (opening) {
-    nameEditInput.value = username;
-    renderDeviceMergeList();
-  }
+  nameEditInput.value = username;
+  settingsProfileAvatar.textContent = initials(username);
+  settingsProfileAvatar.style.background = colorForName(username);
+  renderDeviceMergeList();
+  settingsView.classList.remove('hidden');
+}
+function closeSettings() {
+  settingsView.classList.add('hidden');
+}
+settingsBtn.addEventListener('click', openSettings);
+document.getElementById('settingsBackBtn').addEventListener('click', closeSettings);
+// Esc closes it like any other full-page overlay in the app.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !settingsView.classList.contains('hidden')) closeSettings();
 });
 
 document.getElementById('saveBackend').addEventListener('click', () => {
@@ -2078,7 +2088,7 @@ function renderTransfers() {
 
 transfersBtn.addEventListener('click', () => {
   transfersPanel.classList.toggle('hidden');
-  settingsPanel.classList.add('hidden');
+  closeSettings();
 });
 transfersClearBtn.addEventListener('click', () => {
   for (const [id, t] of transfers) {
@@ -2426,6 +2436,9 @@ const emptyState = document.getElementById('emptyState');
 document.getElementById('refreshBtn').addEventListener('click', loadFiles);
 
 let filesLoadedOnce = false;
+let lastLoadedFiles = [];
+let filesFilter = 'all'; // 'all' | 'group' | 'private'
+
 async function loadFiles() {
   if (!filesLoadedOnce) {
     fileListEl.classList.add('hidden');
@@ -2433,9 +2446,13 @@ async function loadFiles() {
     fileListSkeletonEl.classList.remove('hidden');
   }
   try {
-    const res = await fetch(`${backendBase}/api/files`);
+    // deviceId scopes the result server-side: a private (DM) file is only ever
+    // returned to that DM's two participants, never to anyone else — group
+    // files (and older orphaned uploads) still show for everyone.
+    const res = await fetch(`${backendBase}/api/files?deviceId=${encodeURIComponent(deviceId)}`);
     const files = await res.json();
     filesLoadedOnce = true;
+    lastLoadedFiles = files;
     fileListSkeletonEl.classList.add('hidden');
     fileListEl.classList.remove('hidden');
     renderFiles(files);
@@ -2448,12 +2465,39 @@ async function loadFiles() {
   }
 }
 
+// Resolve a private file's other participant(s) to display names, e.g.
+// "Private · with Priya" instead of a bare device id.
+function namesForSharedWith(sharedWith) {
+  return sharedWith
+    .map((id) => deviceList.find((d) => d.deviceId === id)?.name)
+    .filter(Boolean);
+}
+
+const filesFilterRow = document.getElementById('filesFilterRow');
+if (filesFilterRow) {
+  filesFilterRow.addEventListener('click', (e) => {
+    const chip = e.target.closest('.files-filter-chip');
+    if (!chip) return;
+    filesFilter = chip.dataset.filter;
+    filesFilterRow.querySelectorAll('.files-filter-chip').forEach((c) =>
+      c.classList.toggle('active', c === chip)
+    );
+    renderFiles(lastLoadedFiles);
+  });
+}
+
 function renderFiles(files) {
   fileListEl.innerHTML = '';
-  emptyState.classList.toggle('hidden', files.length > 0);
-  if (files.length === 0) emptyState.textContent = 'No files yet — upload something above.';
+  const visible = filesFilter === 'all' ? files : files.filter((f) => f.scope === filesFilter);
 
-  for (const f of files) {
+  emptyState.classList.toggle('hidden', visible.length > 0);
+  if (visible.length === 0) {
+    emptyState.textContent = files.length === 0
+      ? 'No files yet — upload something above.'
+      : `No ${filesFilter} files.`;
+  }
+
+  for (const f of visible) {
     const li = document.createElement('li');
     li.className = 'file-item';
 
@@ -2463,8 +2507,22 @@ function renderFiles(files) {
 
     const info = document.createElement('div');
     info.className = 'file-info';
+
+    const scopeBadge = document.createElement('span');
+    if (f.scope === 'private') {
+      const names = namesForSharedWith(f.sharedWith || []);
+      scopeBadge.className = 'file-scope-badge private';
+      scopeBadge.title = 'Only visible to you and the person(s) you shared it with';
+      scopeBadge.innerHTML = `🔒 Private${names.length ? ` · ${escapeHtml(names.join(', '))}` : ''}`;
+    } else {
+      scopeBadge.className = 'file-scope-badge group';
+      scopeBadge.title = 'Visible to everyone in Group chat';
+      scopeBadge.textContent = '👥 Group';
+    }
+
     info.innerHTML = `<span class="file-name">${escapeHtml(f.name)}</span>
       <span class="file-meta">${formatBytes(f.size)}</span>`;
+    info.appendChild(scopeBadge);
 
     const actions = document.createElement('div');
     actions.className = 'file-actions';
@@ -2481,7 +2539,9 @@ function renderFiles(files) {
     deleteBtn.className = 'btn delete';
     deleteBtn.addEventListener('click', async () => {
       if (!confirm(`Delete ${f.name}?`)) return;
-      await fetch(`${backendBase}/api/files/${encodeURIComponent(f.name)}`, { method: 'DELETE' });
+      await fetch(`${backendBase}/api/files/${encodeURIComponent(f.name)}?deviceId=${encodeURIComponent(deviceId)}`, {
+        method: 'DELETE',
+      });
       loadFiles();
     });
 

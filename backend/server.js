@@ -226,13 +226,68 @@ app.post('/api/devices/merge', express.json(), (req, res) => {
   res.json({ ok: true, keepId, merged: [...mergeSet] });
 });
 
+// ================= File visibility (Files tab privacy) =================
+// A physical file on disk can be referenced by one or more 'file' chat messages
+// (the original send, plus any forwards). Its visibility in the Files tab is the
+// UNION of every message that references it:
+//   - referenced by any GROUP message  -> visible to everyone ("Group")
+//   - referenced only by DM message(s) -> visible only to that DM's two
+//     participants ("Private"). If forwarded into several different DMs, it's
+//     visible to the union of all those participants, but still never to anyone
+//     outside those specific conversations.
+//   - referenced by no (remaining/undeleted) message at all -> orphaned file
+//     (e.g. left over from before this feature, or every referencing message
+//     was deleted); treated as visible to everyone rather than vanishing into
+//     a state nobody can reach.
+function computeFileVisibility(name) {
+  let groupVisible = false;
+  const dmParticipants = new Set();
+  let owner = null;
+  let latestTs = 0;
+  for (const m of messages) {
+    if (m.type !== 'file' || m.name !== name || m.deleted) continue;
+    if (!m.conversationId || m.conversationId === GROUP_CONVERSATION_ID) {
+      groupVisible = true;
+    } else {
+      const parts = participantsOfConversation(m.conversationId);
+      if (parts) for (const p of parts) dmParticipants.add(p);
+    }
+    if (owner === null) owner = m.fromDeviceId || null;
+    if (m.ts > latestTs) latestTs = m.ts;
+  }
+  const isOrphan = !groupVisible && dmParticipants.size === 0;
+  return { groupVisible: groupVisible || isOrphan, dmParticipants, owner, latestTs, isOrphan };
+}
+
+// Is `deviceId` allowed to see/manage this file in the Files tab?
+function canAccessFile(name, deviceId) {
+  const vis = computeFileVisibility(name);
+  if (vis.groupVisible) return true; // group-visible or orphan -> everyone
+  return Boolean(deviceId) && vis.dmParticipants.has(deviceId);
+}
+
 app.get('/api/files', (req, res) => {
+  const deviceId = typeof req.query.deviceId === 'string' ? req.query.deviceId : null;
   const files = fs.readdirSync(UPLOAD_DIR)
     .filter((name) => !name.startsWith('.tmp-'))
     .map((name) => {
       const stat = fs.statSync(path.join(UPLOAD_DIR, name));
-      return { name, size: stat.size, mtime: stat.mtimeMs };
+      const vis = computeFileVisibility(name);
+      return { name, size: stat.size, mtime: stat.mtimeMs, vis };
     })
+    // Scope: group/orphan files show for everyone; DM files only for their participants.
+    // A request with no deviceId (older client) only ever sees the group/orphan set —
+    // never a private DM file — which is the safe default.
+    .filter((f) => f.vis.groupVisible || (deviceId && f.vis.dmParticipants.has(deviceId)))
+    .map((f) => ({
+      name: f.name,
+      size: f.size,
+      mtime: f.mtime,
+      scope: f.vis.groupVisible ? 'group' : 'private',
+      // Other participant(s) of the private conversation(s) this file was shared in,
+      // so the client can show "Private · with X" instead of just "Private".
+      sharedWith: f.vis.groupVisible ? [] : [...f.vis.dmParticipants].filter((id) => id !== deviceId),
+    }))
     .sort((a, b) => b.mtime - a.mtime);
   res.json(files);
 });
@@ -275,6 +330,12 @@ app.get('/api/download/:name', (req, res) => {
 
 app.delete('/api/files/:name', (req, res) => {
   const name = decodeURIComponent(req.params.name);
+  const deviceId = typeof req.query.deviceId === 'string' ? req.query.deviceId : null;
+
+  if (!canAccessFile(name, deviceId)) {
+    return res.status(403).json({ error: 'Not authorized to delete this file' });
+  }
+
   const filePath = path.join(UPLOAD_DIR, name);
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   const changed = markFileDeletedInMessages(name);

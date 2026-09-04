@@ -517,7 +517,7 @@ header h1 {
 .device-merge-empty {
   font-size: 12px;
   color: var(--muted);
-  padding: 4px 0 0;
+  padding: 0 12px;
 }
 
 .merge-devices-btn {
@@ -896,6 +896,20 @@ header h1 {
   background: rgba(255, 255, 255, 0.15);
 }
 
+input::placeholder {
+  color: var(--muted);
+  opacity: 0.4;
+  user-select: none;
+}
+
+.empty-state {
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+  margin-top: 20px;
+  user-select: none;
+}
+
 .chat-empty-state {
   margin: auto;
   text-align: center;
@@ -916,7 +930,7 @@ header h1 {
   text-align: center;
   color: var(--muted);
   font-size: 11px;
-  margin: 4px 0;
+  margin: 2px 0;
   user-select: none;
 }
 
@@ -989,6 +1003,7 @@ header h1 {
     opacity: 0;
     transform: translateY(6px) scale(0.98);
   }
+
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
@@ -1288,13 +1303,6 @@ header h1 {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  position: sticky;
-  top: 0;
-  background: var(--card);
-  border-bottom: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px;
-  margin: 10px 0;
 }
 
 .files-header h2 {
@@ -2063,6 +2071,7 @@ header h1 {
   background: rgba(255, 255, 255, 0.1);
   border-radius: 999px;
 }
+
 /* ============================================================
    Boot splash — shown while we figure out whether to prompt for a name
    or reconnect straight into the last session, and while the socket makes
@@ -2110,8 +2119,13 @@ header h1 {
 }
 
 @keyframes bootLogoFloat {
-  0%, 100% { transform: translateY(0) scale(1); }
-  50% { transform: translateY(-6px) scale(1.03); }
+  0%, 100% {
+    transform: translateY(0) scale(1);
+  }
+
+  50% {
+    transform: translateY(-6px) scale(1.03);
+  }
 }
 
 .boot-title {
@@ -2136,7 +2150,9 @@ header h1 {
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .boot-status {
@@ -2156,8 +2172,13 @@ header h1 {
 }
 
 @keyframes shimmer {
-  0% { background-position: 150% 0; }
-  100% { background-position: -50% 0; }
+  0% {
+    background-position: 150% 0;
+  }
+
+  100% {
+    background-position: -50% 0;
+  }
 }
 
 .avatar-skeleton {
@@ -2314,8 +2335,15 @@ header h1 {
 }
 
 @keyframes panelSlideIn {
-  from { opacity: 0; transform: translateY(-6px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .transfers-panel-header {
@@ -2483,4 +2511,233 @@ header h1 {
 
 .msg-image.loaded {
   opacity: 1;
+}
+
+/* ============================================================
+   Files tab: private-vs-group scope badge + filter chips
+   ============================================================ */
+.files-filter-row {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0 12px;
+  user-select: none;
+}
+
+.files-filter-chip {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 6px 13px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.files-filter-chip:hover {
+  color: var(--text);
+}
+
+.files-filter-chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.file-scope-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.file-scope-badge.group {
+  background: rgba(79, 140, 255, 0.14);
+  color: var(--accent);
+}
+
+.file-scope-badge.private {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f0a5a5;
+}
+
+html[data-theme="light"] .file-scope-badge.private {
+  color: #b23b3b;
+}
+
+/* ============================================================
+   Settings: real full-page view, not a dropdown.
+   Same overlay pattern as the boot splash / name modal — covers
+   the entire app window on both mobile and desktop.
+   ============================================================ */
+.settings-view {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-view.hidden {
+  display: none;
+}
+
+.settings-view-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+  max-width: 640px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.settings-view-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.settings-view-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 16px 40px;
+  max-width: 640px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.settings-profile-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+
+.settings-profile-avatar {
+  width: 56px;
+  height: 56px;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.settings-profile-fields {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-profile-fields .settings-label {
+  margin-bottom: 8px;
+}
+
+/* ============================================================
+   Desktop layout: real two-pane chat (list + conversation), like
+   WhatsApp/Telegram Desktop, instead of a single centered mobile
+   column that just happens to run on a big screen.
+   ============================================================ */
+@media (min-width: 680px) {
+  .app {
+    max-width: 1180px;
+    padding: 20px 24px 0;
+  }
+
+  #chatTab.hidden {
+    display: none;
+  }
+
+  #chatTab {
+    display: grid;
+    grid-template-columns: minmax(300px, 360px) 1fr;
+    align-items: stretch;
+    min-height: 0;
+  }
+
+  .chat-list-view {
+    grid-column: 1;
+    grid-row: 1;
+    border-right: 1px solid var(--border);
+    padding-right: 14px;
+    min-height: 0;
+  }
+
+  /* The list pane always stays visible on desktop, even though the same
+     .hidden class still gets toggled for the mobile single-pane flow. */
+  .chat-list-view.hidden {
+    display: flex;
+  }
+
+  .conversation-view,
+  .conversation-empty-state {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .conversation-view {
+    padding-left: 16px;
+    min-height: 0;
+  }
+
+  /* conversation-view keeps its normal hidden/shown behavior (only shown once
+     a chat is opened) — we just also give the empty pane something to show
+     in its place, instead of leaving column 2 blank. */
+  .conversation-empty-state.hidden {
+    display: flex;
+  }
+
+  .conversation-view:not(.hidden)~.conversation-empty-state {
+    display: none;
+  }
+
+  /* No need to "go back" to the list — both panes are already visible. */
+  #backToListBtn {
+    display: none;
+  }
+
+  .settings-view-header,
+  .settings-view-body {
+    max-width: 720px;
+  }
+}
+
+.conversation-empty-state {
+  display: none;
+  /* only ever shown via the desktop @media rule above */
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 6px;
+  color: var(--muted);
+  height: 100%;
+}
+
+.conversation-empty-icon {
+  font-size: 46px;
+  margin-bottom: 6px;
+  opacity: 0.8;
+}
+
+.conversation-empty-state h2 {
+  color: var(--text);
+  margin: 0;
+  font-size: 20px;
+}
+
+.conversation-empty-state p {
+  margin: 0;
+  font-size: 13.5px;
 }

@@ -37,6 +37,83 @@
   <!-- Toast notifications -->
   <div id="toastHost" class="toast-host"></div>
 
+  <!-- Settings: a real full page (not a dropdown), same pattern as WhatsApp/Telegram's
+       settings screen — its own header with a back button, scrollable sectioned content.
+       Works identically on mobile (covers the whole screen) and desktop (overlays the
+       whole app window). -->
+  <div id="settingsView" class="settings-view hidden">
+    <div class="settings-view-header">
+      <button type="button" id="settingsBackBtn" class="icon-btn ghost" title="Back">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+      </button>
+      <h2>Settings</h2>
+    </div>
+
+    <div class="settings-view-body">
+      <div class="settings-profile-card">
+        <div id="settingsProfileAvatar" class="avatar settings-profile-avatar"></div>
+        <div class="settings-profile-fields">
+          <label class="settings-label">Display name</label>
+          <div class="backend-row">
+            <input id="nameEditInput" type="text" maxlength="40" spellcheck="false" />
+            <button id="saveName">Save</button>
+          </div>
+          <p class="settings-hint">This is the name others on the network see.</p>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <label class="settings-label">Theme</label>
+        <div class="theme-row" id="themeRow">
+          <button type="button" class="theme-option" data-theme="light">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+            Light
+          </button>
+          <button type="button" class="theme-option" data-theme="dark">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            Dark
+          </button>
+          <button type="button" class="theme-option" data-theme="system">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            System
+          </button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <label class="settings-label">Notifications</label>
+        <div class="notif-row">
+          <span id="notifStatusText" class="notif-status-text">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+            <span id="notifStatusLabel">Notifications are off</span>
+          </span>
+          <button type="button" id="notifToggleBtn" class="notif-toggle-btn">Enable</button>
+        </div>
+        <p class="settings-hint" id="notifHint">Get notified about new messages when this tab isn't focused.</p>
+      </div>
+
+      <div class="settings-section">
+        <label class="settings-label">Backend address</label>
+        <div class="backend-row">
+          <input id="backendUrl" type="text" spellcheck="false" />
+          <button id="saveBackend">Save</button>
+        </div>
+        <p class="settings-hint">Only change this if the backend runs on a different device or port.</p>
+      </div>
+
+      <div class="settings-section">
+        <label class="settings-label">Devices</label>
+        <p class="settings-hint">
+          Select two or more rows below that are really the same device (e.g. duplicates left
+          over from before this device kept a stable identity across restarts) and merge them
+          into one — their chat history will be combined.
+        </p>
+        <ul id="deviceMergeList" class="device-merge-list"></ul>
+        <button type="button" id="mergeDevicesBtn" class="merge-devices-btn" disabled>Merge selected</button>
+      </div>
+    </div>
+  </div>
+
   <div class="app">
     <header>
       <div class="header-top">
@@ -69,67 +146,6 @@
         </div>
         <ul id="transfersList" class="transfers-list"></ul>
         <p id="transfersEmpty" class="transfers-empty">No active transfers.</p>
-      </div>
-
-      <!-- Settings panel: profile, theme, notifications, backend address -->
-      <div id="settingsPanel" class="settings-panel hidden">
-        <div class="settings-section">
-          <label class="settings-label">Display name</label>
-          <div class="backend-row">
-            <input id="nameEditInput" type="text" maxlength="40" spellcheck="false" />
-            <button id="saveName">Save</button>
-          </div>
-        </div>
-
-        <div class="settings-section">
-          <label class="settings-label">Theme</label>
-          <div class="theme-row" id="themeRow">
-            <button type="button" class="theme-option" data-theme="light">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-              Light
-            </button>
-            <button type="button" class="theme-option" data-theme="dark">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-              Dark
-            </button>
-            <button type="button" class="theme-option" data-theme="system">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-              System
-            </button>
-          </div>
-        </div>
-
-        <div class="settings-section">
-          <label class="settings-label">Notifications</label>
-          <div class="notif-row">
-            <span id="notifStatusText" class="notif-status-text">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-              <span id="notifStatusLabel">Notifications are off</span>
-            </span>
-            <button type="button" id="notifToggleBtn" class="notif-toggle-btn">Enable</button>
-          </div>
-          <p class="settings-hint" id="notifHint">Get notified about new messages when this tab isn't focused.</p>
-        </div>
-
-        <div class="settings-section">
-          <label class="settings-label">Backend address</label>
-          <div class="backend-row">
-            <input id="backendUrl" type="text" spellcheck="false" />
-            <button id="saveBackend">Save</button>
-          </div>
-          <p class="settings-hint">Only change this if the backend runs on a different device or port.</p>
-        </div>
-
-        <div class="settings-section">
-          <label class="settings-label">Devices</label>
-          <p class="settings-hint">
-            Select two or more rows below that are really the same device (e.g. duplicates left
-            over from before this device kept a stable identity across restarts) and merge them
-            into one — their chat history will be combined.
-          </p>
-          <ul id="deviceMergeList" class="device-merge-list"></ul>
-          <button type="button" id="mergeDevicesBtn" class="merge-devices-btn" disabled>Merge selected</button>
-        </div>
       </div>
 
       <nav class="tabs">
@@ -246,6 +262,14 @@
           <input id="chatFileInput" type="file" hidden multiple />
         </form>
       </div>
+
+      <!-- Desktop two-pane layout only: shown in the right-hand pane in place of
+           conversationView when no chat is open yet (see @media rules in style.css). -->
+      <div id="conversationEmptyState" class="conversation-empty-state hidden">
+        <div class="conversation-empty-icon">📡</div>
+        <h2>LAN Chat</h2>
+        <p>Select a chat from the list to start messaging.</p>
+      </div>
     </section>
 
     <!-- ===================== FILES TAB ===================== -->
@@ -272,6 +296,13 @@
           <button id="refreshBtn" title="Refresh list">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
           </button>
+        </div>
+        <!-- Group files are visible to everyone; Private files (sent in a 1:1 chat)
+             are only ever returned by the backend to that chat's two participants. -->
+        <div id="filesFilterRow" class="files-filter-row">
+          <button type="button" class="files-filter-chip active" data-filter="all">All</button>
+          <button type="button" class="files-filter-chip" data-filter="group">👥 Group</button>
+          <button type="button" class="files-filter-chip" data-filter="private">🔒 Private</button>
         </div>
         <ul id="fileListSkeleton" class="file-list skeleton-list hidden">
           <li class="file-item skeleton"><span class="skeleton-block file-icon"></span><div class="file-info"><span class="skeleton-block" style="width:60%;height:13px;"></span><span class="skeleton-block" style="width:30%;height:11px;margin-top:6px;"></span></div></li>
