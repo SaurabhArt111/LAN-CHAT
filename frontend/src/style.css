@@ -455,6 +455,7 @@ header h1 {
   font-size: 11px;
   color: var(--muted);
   margin: 8px 0 0;
+  user-select: none;
 }
 
 .device-merge-list {
@@ -1147,9 +1148,9 @@ input::placeholder {
 .jump-to-bottom {
   position: absolute;
   bottom: 78px;
-  left: 50%;
+  right: 2%;
   transform: translateX(-50%);
-  background: var(--accent);
+  background: var(--muted);
   color: white;
   border: none;
   padding: 6px 14px;
@@ -1245,6 +1246,7 @@ input::placeholder {
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
   flex-shrink: 0;
+  user-select: none;
 }
 
 .dropzone.dragover {
@@ -1312,6 +1314,7 @@ input::placeholder {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin: 0;
+  user-select: none;
 }
 
 .files-header button {
@@ -2601,6 +2604,7 @@ html[data-theme="light"] .file-scope-badge.private {
   max-width: 640px;
   width: 100%;
   margin: 0 auto;
+  user-select: none;
 }
 
 .settings-view-header h2 {
@@ -2723,6 +2727,7 @@ html[data-theme="light"] .file-scope-badge.private {
   gap: 6px;
   color: var(--muted);
   height: 100%;
+  user-select: none;
 }
 
 .conversation-empty-icon {
